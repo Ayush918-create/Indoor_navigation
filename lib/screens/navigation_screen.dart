@@ -1,8 +1,9 @@
-// lib/screens/navigation_screen.dart
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_database/firebase_database.dart';
+
+import '../services/timetable_service.dart';
+import 'qr_scanner_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
   const NavigationScreen({super.key});
@@ -12,260 +13,459 @@ class NavigationScreen extends StatefulWidget {
 }
 
 class _NavigationScreenState extends State<NavigationScreen> {
-  final TextEditingController roomController =
-      TextEditingController();
+  final TimetableService _timetableService = TimetableService();
+  Timer? _clockTimer;
 
-  final DatabaseReference dbRef = FirebaseDatabase.instanceFor(
-    app: Firebase.app(),
-    databaseURL:
-        "https://indoor-navigation-app-cfb2f-default-rtdb.asia-southeast1.firebasedatabase.app",
-  ).ref();
+  String? _currentLocation = 'Lobby';
+  String? _destination = 'E1-101';
+  bool _routeToSuggestedRoom = true;
 
-  List<Offset> pathPoints = [];
-  String pathText = "";
+  static const List<String> _locations = [
+    'Main Gate',
+    'Lobby',
+    'HOD Office',
+    'Seminar Hall',
+    'E1-101',
+    'E1-102',
+    'E1-103',
+    'E1-104',
+    'E1-105',
+    'E1-106',
+    'E1-107',
+    'E1-108',
+    'E1-109',
+  ];
 
-  bool roomConflict = false;
-  String suggestedRoom = "";
+  static const Map<String, Offset> _mapNodes = {
+    'Main Gate': Offset(0.10, 0.88),
+    'Lobby': Offset(0.22, 0.68),
+    'HOD Office': Offset(0.78, 0.20),
+    'Seminar Hall': Offset(0.78, 0.80),
+    'E1-101': Offset(0.18, 0.28),
+    'E1-102': Offset(0.34, 0.28),
+    'E1-103': Offset(0.50, 0.28),
+    'E1-104': Offset(0.66, 0.28),
+    'E1-105': Offset(0.82, 0.28),
+    'E1-106': Offset(0.18, 0.58),
+    'E1-107': Offset(0.34, 0.58),
+    'E1-108': Offset(0.50, 0.58),
+    'E1-109': Offset(0.66, 0.58),
+  };
 
-  Future<void> startNavigation() async {
-    String room = roomController.text.trim();
-
-    if (room.isEmpty) {
-      setState(() {
-        pathText = "Enter Room Number";
-      });
-      return;
-    }
-
-    final snapshot =
-        await dbRef.child("navigation_map/$room").get();
-
-    if (!snapshot.exists) {
-      setState(() {
-        pathText = "Room Not Found";
-      });
-      return;
-    }
-
-    Map data = Map<String, dynamic>.from(
-      snapshot.value as Map,
-    );
-
-    List points = data["waypoints"] ?? [];
-
-    List<Offset> temp = [];
-
-    for (var p in points) {
-      temp.add(
-        Offset(
-          (p["x"] as num).toDouble(),
-          (p["y"] as num).toDouble(),
-        ),
-      );
-    }
-
-    setState(() {
-      pathPoints = temp;
-      pathText = data["path"].toString();
+  @override
+  void initState() {
+    super.initState();
+    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
     });
-  }
-
-  Future<void> checkRoomConflict() async {
-    String room = roomController.text.trim();
-
-    if (room.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Enter Room Number"),
-        ),
-      );
-      return;
-    }
-
-    final snapshot =
-        await dbRef.child("room_status").child(room).get();
-
-    if (!snapshot.exists) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Room Not Found"),
-        ),
-      );
-      return;
-    }
-
-    bool occupied =
-        snapshot.child("occupied").value as bool? ?? false;
-
-    if (occupied) {
-      final allRooms =
-          await dbRef.child("room_status").get();
-
-      String freeRoom = "No Free Room";
-
-      for (var roomData in allRooms.children) {
-        bool isOccupied =
-            roomData.child("occupied").value as bool? ??
-                false;
-
-        if (!isOccupied) {
-          freeRoom = roomData.key ?? "";
-          break;
-        }
-      }
-
-      setState(() {
-        roomConflict = true;
-        suggestedRoom = freeRoom;
-      });
-
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text("Room Conflict"),
-          content: Text(
-            "Room $room is occupied.\nSuggested Room: $freeRoom",
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-              },
-              child: const Text("OK"),
-            ),
-          ],
-        ),
-      );
-    } else {
-      setState(() {
-        roomConflict = false;
-        suggestedRoom = room;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Room $room is available"),
-        ),
-      );
-    }
   }
 
   @override
   void dispose() {
-    roomController.dispose();
+    _clockTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> scanCurrentLocation() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const QRScannerScreen(),
+      ),
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _currentLocation = _matchLocation(result.toString());
+      });
+    }
+  }
+
+  String _matchLocation(String value) {
+    final normalized = value.trim().toLowerCase();
+
+    return _locations.firstWhere(
+      (location) => location.toLowerCase() == normalized,
+      orElse: () => value.trim(),
+    );
+  }
+
+  String _routeTarget(RoomAvailability availability) {
+    if (_routeToSuggestedRoom &&
+        availability.occupied &&
+        availability.suggestedRoom != null) {
+      return availability.suggestedRoom!;
+    }
+
+    return _destination ?? '';
+  }
+
+  List<Offset> _buildRoute(String from, String to) {
+    final start = _mapNodes[from];
+    final end = _mapNodes[to];
+
+    if (start == null || end == null) return [];
+
+    const corridorY = 0.46;
+
+    return [
+      start,
+      Offset(start.dx, corridorY),
+      const Offset(0.50, corridorY),
+      Offset(end.dx, corridorY),
+      end,
+    ];
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Navigation"),
+        title: const Text('Real-time Navigation'),
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
+      body: StreamBuilder<List<TimetableEntry>>(
+        stream: _timetableService.watchEntries(),
+        builder: (context, snapshot) {
+          final entries = snapshot.data ?? [];
+          final destination = _destination ?? '';
+          final currentLocation = _currentLocation ?? '';
+          final availability =
+              _timetableService.availabilityForRoom(destination, entries);
+          final routeTarget = _routeTarget(availability);
+          final pathPoints = _buildRoute(currentLocation, routeTarget);
+
+          return SafeArea(
+            child: Column(
               children: [
-                Image.asset(
-                  "assets/images/floor_map.png",
-                  width: double.infinity,
-                  height: double.infinity,
-                  fit: BoxFit.cover,
+                Expanded(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: Image.asset(
+                          'assets/images/floor_map.png',
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: PathPainter(pathPoints),
+                        ),
+                      ),
+                      if (_mapNodes[currentLocation] != null)
+                        LocationMarker(
+                          point: _mapNodes[currentLocation]!,
+                          label: 'You',
+                          color: Colors.red,
+                        ),
+                      if (_mapNodes[routeTarget] != null)
+                        LocationMarker(
+                          point: _mapNodes[routeTarget]!,
+                          label: routeTarget,
+                          color: availability.occupied &&
+                                  routeTarget != destination
+                              ? Colors.green
+                              : Colors.blue,
+                        ),
+                    ],
+                  ),
                 ),
-                CustomPaint(
-                  size: Size.infinite,
-                  painter: PathPainter(pathPoints),
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _locationPicker(
+                              label: 'Current location',
+                              value: _currentLocation,
+                              icon: Icons.my_location,
+                              onChanged: (value) {
+                                setState(() => _currentLocation = value);
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton.filledTonal(
+                            tooltip: 'Scan current location QR',
+                            onPressed: scanCurrentLocation,
+                            icon: const Icon(Icons.qr_code_scanner),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      _locationPicker(
+                        label: 'Destination room',
+                        value: _destination,
+                        icon: Icons.place,
+                        onChanged: (value) {
+                          setState(() => _destination = value);
+                        },
+                      ),
+                      const SizedBox(height: 12),
+                      _StatusPanel(
+                        destination: destination,
+                        routeTarget: routeTarget,
+                        availability: availability,
+                        pathAvailable: pathPoints.isNotEmpty,
+                        onUseDestination: () {
+                          setState(() => _routeToSuggestedRoom = false);
+                        },
+                        onUseSuggestion: availability.suggestedRoom == null
+                            ? null
+                            : () {
+                                setState(() => _routeToSuggestedRoom = true);
+                              },
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
-          ),
+          );
+        },
+      ),
+    );
+  }
 
-          Padding(
-            padding: const EdgeInsets.all(10),
-            child: TextField(
-              controller: roomController,
-              decoration: const InputDecoration(
-                labelText: "Enter Room (E1-101)",
-                border: OutlineInputBorder(),
+  Widget _locationPicker({
+    required String label,
+    required String? value,
+    required IconData icon,
+    required ValueChanged<String?> onChanged,
+  }) {
+    return DropdownButtonFormField<String>(
+      initialValue: _locations.contains(value) ? value : null,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+        border: const OutlineInputBorder(),
+      ),
+      items: _locations.map((location) {
+        return DropdownMenuItem<String>(
+          value: location,
+          child: Text(location),
+        );
+      }).toList(),
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _StatusPanel extends StatelessWidget {
+  const _StatusPanel({
+    required this.destination,
+    required this.routeTarget,
+    required this.availability,
+    required this.pathAvailable,
+    required this.onUseDestination,
+    required this.onUseSuggestion,
+  });
+
+  final String destination;
+  final String routeTarget;
+  final RoomAvailability availability;
+  final bool pathAvailable;
+  final VoidCallback onUseDestination;
+  final VoidCallback? onUseSuggestion;
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = availability.occupied ? Colors.orange : Colors.green;
+    final title = availability.occupied
+        ? '$destination is occupied'
+        : '$destination is free now';
+    final faculty = availability.currentClass?.faculty;
+    final facultyText = faculty == null || faculty.isEmpty
+        ? ''
+        : ' with $faculty';
+    final waitText = availability.nextFreeAt == null
+        ? '.'
+        : '. Wait until ${availability.nextFreeAt}.';
+
+    final detail = availability.occupied
+        ? '${availability.currentClass?.subject ?? 'Class'} is running'
+            '$facultyText$waitText'
+        : 'Route is ready from your current location.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: statusColor.withOpacity(0.10),
+        border: Border.all(color: statusColor.withOpacity(0.45)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                availability.occupied ? Icons.warning_amber : Icons.check,
+                color: statusColor,
               ),
-            ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
           ),
-
-          ElevatedButton(
-            onPressed: startNavigation,
-            child: const Text("Start Navigation"),
-          ),
-
-          const SizedBox(height: 10),
-
-          ElevatedButton(
-            onPressed: checkRoomConflict,
-            child: const Text("Check Room Conflict"),
-          ),
-
-          const SizedBox(height: 10),
-
-          Text(
-            pathText,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          if (roomConflict)
+          const SizedBox(height: 6),
+          Text(detail),
+          if (availability.occupied && availability.suggestedRoom != null) ...[
+            const SizedBox(height: 8),
             Text(
-              "Suggested Room: $suggestedRoom",
-              style: const TextStyle(
-                color: Colors.red,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
+              'Suggested free room: ${availability.suggestedRoom}. '
+              'Showing route to $routeTarget.',
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
-
-          const SizedBox(height: 20),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: onUseDestination,
+                    icon: const Icon(Icons.schedule),
+                    label: const Text('Wait'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: onUseSuggestion,
+                    icon: const Icon(Icons.alt_route),
+                    label: const Text('Use room'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (!pathAvailable) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'No map path is available for this location yet.',
+              style: TextStyle(color: Colors.red),
+            ),
+          ],
         ],
       ),
     );
   }
 }
 
-class PathPainter extends CustomPainter {
-  final List<Offset> points;
+class LocationMarker extends StatelessWidget {
+  const LocationMarker({
+    super.key,
+    required this.point,
+    required this.label,
+    required this.color,
+  });
 
+  final Offset point;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment(point.dx * 2 - 1, point.dy * 2 - 1),
+      child: Transform.translate(
+        offset: const Offset(0, -22),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 18,
+              height: 18,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 3),
+              ),
+            ),
+            Container(
+              margin: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 6,
+                vertical: 3,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.88),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class PathPainter extends CustomPainter {
   PathPainter(this.points);
+
+  final List<Offset> points;
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (points.isEmpty) return;
+    if (points.length < 2) return;
 
-    final paint = Paint()
-      ..color = Colors.blue
-      ..strokeWidth = 5
+    final scaledPoints = points
+        .map(
+          (point) => Offset(
+            point.dx * size.width,
+            point.dy * size.height,
+          ),
+        )
+        .toList();
+
+    final shadowPaint = Paint()
+      ..color = Colors.white.withOpacity(0.95)
+      ..strokeWidth = 11
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
 
-    final path = Path();
+    final routePaint = Paint()
+      ..color = Colors.blue
+      ..strokeWidth = 6
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
 
-    path.moveTo(
-      points.first.dx,
-      points.first.dy,
-    );
+    final path = Path()..moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
 
-    for (int i = 1; i < points.length; i++) {
-      path.lineTo(
-        points[i].dx,
-        points[i].dy,
-      );
+    for (int i = 1; i < scaledPoints.length; i++) {
+      path.lineTo(scaledPoints[i].dx, scaledPoints[i].dy);
     }
 
-    canvas.drawPath(path, paint);
+    canvas
+      ..drawPath(path, shadowPaint)
+      ..drawPath(path, routePaint);
+
+    for (final point in scaledPoints) {
+      canvas.drawCircle(point, 4, routePaint);
+    }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true;
+  bool shouldRepaint(PathPainter oldDelegate) {
+    return oldDelegate.points != points;
   }
 }

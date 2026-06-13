@@ -1,8 +1,8 @@
-// lib/screens/timetable_screen.dart
+import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_database/firebase_database.dart';
+
+import '../services/timetable_service.dart';
 
 class TimetableScreen extends StatefulWidget {
   const TimetableScreen({super.key});
@@ -12,66 +12,111 @@ class TimetableScreen extends StatefulWidget {
 }
 
 class _TimetableScreenState extends State<TimetableScreen> {
-  final DatabaseReference dbRef = FirebaseDatabase.instanceFor(
-    app: Firebase.app(),
-    databaseURL:
-        "https://indoor-navigation-app-cfb2f-default-rtdb.asia-southeast1.firebasedatabase.app",
-  ).ref();
-
-  List<Map<String, dynamic>> timetableList = [];
+  final TimetableService _timetableService = TimetableService();
+  Timer? _clockTimer;
 
   @override
   void initState() {
     super.initState();
-    loadTimetable();
+    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
-  Future<void> loadTimetable() async {
-    final snapshot = await dbRef.child("timetable").get();
-
-    if (snapshot.exists) {
-      Map data = snapshot.value as Map;
-
-      List<Map<String, dynamic>> temp = [];
-
-      data.forEach((key, value) {
-        temp.add({
-          "subject": key.toString(),
-          "faculty": value["faculty"] ?? "",
-          "room": value["room"] ?? "",
-          "time": value["time"] ?? "",
-        });
-      });
-
-      setState(() {
-        timetableList = temp;
-      });
-    }
+  @override
+  void dispose() {
+    _clockTimer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Time Table"),
+        title: const Text('Live Timetable'),
       ),
-      body: ListView.builder(
-        itemCount: timetableList.length,
-        itemBuilder: (context, index) {
-          final item = timetableList[index];
+      body: StreamBuilder<List<TimetableEntry>>(
+        stream: _timetableService.watchEntries(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
 
-          return Card(
-            margin: const EdgeInsets.all(8),
-            child: ListTile(
-              leading: const Icon(
-                Icons.schedule,
-                color: Colors.blue,
-              ),
-              title: Text(item["subject"]),
-              subtitle: Text(
-                "${item["faculty"]}\nRoom: ${item["room"]}\nTime: ${item["time"]}",
-              ),
-            ),
+          final entries = snapshot.data ?? [];
+
+          if (entries.isEmpty) {
+            return const Center(
+              child: Text('No Timetable Found'),
+            );
+          }
+
+          final groupedData = <String, List<TimetableEntry>>{
+            for (final day in TimetableService.weekDays) day: [],
+          };
+
+          for (final entry in entries) {
+            groupedData.putIfAbsent(entry.day, () => []).add(entry);
+          }
+
+          return ListView(
+            children: groupedData.entries.map((entry) {
+              if (entry.value.isEmpty) return const SizedBox.shrink();
+
+              return ExpansionTile(
+                initiallyExpanded:
+                    entry.key == TimetableService.todayName(),
+                title: Text(
+                  entry.key,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                children: entry.value.map((item) {
+                  final isCurrentClass =
+                      TimetableService.isEntryRunningNow(item);
+
+                  return Card(
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    color: isCurrentClass
+                        ? Colors.green.shade100
+                        : Colors.white,
+                    child: ListTile(
+                      title: Text(
+                        item.subject,
+                        style: TextStyle(
+                          fontWeight: isCurrentClass
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                        ),
+                      ),
+                      subtitle: Text(
+                        'Faculty: ${item.faculty}\n'
+                        'Room: ${item.room}\n'
+                        'Time: ${item.startTime} - ${item.endTime}',
+                      ),
+                      trailing: isCurrentClass
+                          ? const Chip(
+                              label: Text(
+                                'LIVE',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                ),
+                              ),
+                              backgroundColor: Colors.green,
+                            )
+                          : null,
+                    ),
+                  );
+                }).toList(),
+              );
+            }).toList(),
           );
         },
       ),

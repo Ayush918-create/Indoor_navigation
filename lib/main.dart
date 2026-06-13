@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 import 'firebase_options.dart';
-import 'services/auth_service.dart';
 import 'screens/login_screen.dart';
 
 Future<void> main() async {
@@ -12,8 +12,12 @@ Future<void> main() async {
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Upload demo users once
-  await AuthService().createDemoUsers();
+  // Force correct Realtime Database region
+  FirebaseDatabase.instanceFor(
+    app: Firebase.app(),
+    databaseURL:
+        'https://indoor-navigation-app-cfb2f-default-rtdb.asia-southeast1.firebasedatabase.app',
+  );
 
   runApp(const MyApp());
 }

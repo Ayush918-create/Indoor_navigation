@@ -1,8 +1,8 @@
 // lib/screens/home_screen.dart
 
 import 'package:flutter/material.dart';
-import '../services/upload_data.dart';
 
+import '../services/upload_data.dart';
 import 'navigation_screen.dart';
 import 'faculty_screen.dart';
 import 'timetable_screen.dart';
@@ -22,17 +22,19 @@ class HomeScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-
-            // Upload Firebase Data Button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
                 onPressed: () async {
                   await uploadInitialData();
 
+                  if (!context.mounted) return;
+
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(
-                      content: Text("Firebase Data Uploaded Successfully"),
+                      content: Text(
+                        "Firebase Data Uploaded Successfully",
+                      ),
                     ),
                   );
                 },
@@ -96,7 +98,9 @@ class HomeScreen extends StatelessWidget {
       onTap: () {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => screen),
+          MaterialPageRoute(
+            builder: (_) => screen,
+          ),
         );
       },
       child: Card(
