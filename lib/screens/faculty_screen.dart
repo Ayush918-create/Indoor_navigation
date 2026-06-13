@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
@@ -18,145 +20,302 @@ class _FacultyScreenState extends State<FacultyScreen> {
         'https://indoor-navigation-app-cfb2f-default-rtdb.asia-southeast1.firebasedatabase.app',
   ).ref();
   final TimetableService _timetableService = TimetableService();
+  final TextEditingController _searchController = TextEditingController();
+  Timer? _clockTimer;
 
-  List<Map<String, dynamic>> facultyList = [];
-  List<Map<String, dynamic>> filteredList = [];
+  String _query = '';
 
   @override
   void initState() {
     super.initState();
-    loadFaculty();
-  }
-
-  Future<void> loadFaculty() async {
-    try {
-      final facultySnapshot = await dbRef.child('faculty').get();
-      final entries = await _timetableService.fetchEntries();
-
-      if (!facultySnapshot.exists) return;
-
-      final temp = <Map<String, dynamic>>[];
-
-      for (final item in _parseFirebaseCollection(facultySnapshot.value)) {
-        final facultyName = item['name']?.toString() ?? '';
-        final cabinRoom = item['room']?.toString() ?? '';
-
-        var available = true;
-        var currentRoom = cabinRoom;
-
-        for (final entry in entries) {
-          if (entry.faculty.trim().toLowerCase() ==
-                  facultyName.trim().toLowerCase() &&
-              TimetableService.isEntryRunningNow(entry)) {
-            available = false;
-            currentRoom = entry.room;
-            break;
-          }
-        }
-
-        temp.add({
-          'name': facultyName,
-          'room': currentRoom,
-          'available': available,
-        });
-      }
-
-      setState(() {
-        facultyList = temp;
-        filteredList = temp;
-      });
-    } catch (e) {
-      debugPrint('Faculty Error: $e');
-    }
-  }
-
-  List<Map<dynamic, dynamic>> _parseFirebaseCollection(Object? value) {
-    final items = <Map<dynamic, dynamic>>[];
-
-    if (value is List) {
-      for (final item in value) {
-        if (item is Map) items.add(item);
-      }
-    } else if (value is Map) {
-      for (final item in value.values) {
-        if (item is Map) items.add(item);
-      }
-    }
-
-    return items;
-  }
-
-  void searchFaculty(String query) {
-    setState(() {
-      filteredList = facultyList.where((faculty) {
-        return faculty['name']
-            .toString()
-            .toLowerCase()
-            .contains(query.toLowerCase());
-      }).toList();
+    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
     });
   }
 
-  Future<void> refreshFaculty() async {
-    await loadFaculty();
+  @override
+  void dispose() {
+    _clockTimer?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Map<String, FacultyProfile> _parseFacultyProfiles(Object? value) {
+    final profiles = <String, FacultyProfile>{};
+
+    Iterable<dynamic> items = const [];
+    if (value is List) {
+      items = value.whereType<Map>();
+    } else if (value is Map) {
+      items = value.values.whereType<Map>();
+    }
+
+    for (final item in items) {
+      final name = item['name']?.toString().trim() ?? '';
+      if (name.isEmpty) continue;
+
+      profiles[name.toLowerCase()] = FacultyProfile(
+        name: name,
+        cabinRoom: item['room']?.toString() ?? '',
+      );
+    }
+
+    return profiles;
+  }
+
+  List<FacultySchedule> _buildFacultySchedules(
+    Object? facultyValue,
+    List<TimetableEntry> entries,
+  ) {
+    final profiles = _parseFacultyProfiles(facultyValue);
+
+    for (final entry in entries) {
+      final faculty = entry.faculty.trim();
+      if (faculty.isEmpty) continue;
+
+      profiles.putIfAbsent(
+        faculty.toLowerCase(),
+        () => FacultyProfile(name: faculty, cabinRoom: ''),
+      );
+    }
+
+    final schedules = profiles.values.map((profile) {
+      final facultyEntries = entries
+          .where(
+            (entry) =>
+                entry.faculty.trim().toLowerCase() ==
+                profile.name.trim().toLowerCase(),
+          )
+          .toList();
+
+      TimetableEntry? runningClass;
+      for (final entry in facultyEntries) {
+        if (TimetableService.isEntryRunningNow(entry)) {
+          runningClass = entry;
+          break;
+        }
+      }
+
+      return FacultySchedule(
+        profile: profile,
+        entries: facultyEntries,
+        runningClass: runningClass,
+      );
+    }).toList()
+      ..sort(
+        (a, b) => a.profile.name.toLowerCase().compareTo(
+              b.profile.name.toLowerCase(),
+            ),
+      );
+
+    if (_query.trim().isEmpty) return schedules;
+
+    final query = _query.trim().toLowerCase();
+    return schedules.where((schedule) {
+      return schedule.profile.name.toLowerCase().contains(query) ||
+          schedule.profile.cabinRoom.toLowerCase().contains(query) ||
+          schedule.entries.any(
+            (entry) =>
+                entry.subject.toLowerCase().contains(query) ||
+                entry.room.toLowerCase().contains(query),
+          );
+    }).toList();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Faculty Search'),
+        title: const Text('Faculty Timetable'),
       ),
       body: Column(
         children: [
           Padding(
             padding: const EdgeInsets.all(12),
             child: TextField(
-              onChanged: searchFaculty,
+              controller: _searchController,
+              onChanged: (value) => setState(() => _query = value),
               decoration: const InputDecoration(
-                hintText: 'Search Faculty',
+                hintText: 'Search faculty, room, or subject',
                 prefixIcon: Icon(Icons.search),
                 border: OutlineInputBorder(),
               ),
             ),
           ),
           Expanded(
-            child: RefreshIndicator(
-              onRefresh: refreshFaculty,
-              child: ListView.builder(
-                itemCount: filteredList.length,
-                itemBuilder: (context, index) {
-                  final faculty = filteredList[index];
+            child: StreamBuilder<DatabaseEvent>(
+              stream: dbRef.child('faculty').onValue,
+              builder: (context, facultySnapshot) {
+                return StreamBuilder<List<TimetableEntry>>(
+                  stream: _timetableService.watchEntries(),
+                  builder: (context, timetableSnapshot) {
+                    if (!facultySnapshot.hasData &&
+                        !timetableSnapshot.hasData) {
+                      return const Center(
+                        child: CircularProgressIndicator(),
+                      );
+                    }
 
-                  return Card(
-                    margin: const EdgeInsets.all(8),
-                    child: ListTile(
-                      leading: const CircleAvatar(
-                        child: Icon(Icons.person),
+                    final schedules = _buildFacultySchedules(
+                      facultySnapshot.data?.snapshot.value,
+                      timetableSnapshot.data ?? [],
+                    );
+
+                    if (schedules.isEmpty) {
+                      return const Center(
+                        child: Text('No Faculty Timetable Found'),
+                      );
+                    }
+
+                    return RefreshIndicator(
+                      onRefresh: () async => setState(() {}),
+                      child: ListView.builder(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        itemCount: schedules.length,
+                        itemBuilder: (context, index) {
+                          return FacultyScheduleTile(
+                            schedule: schedules[index],
+                          );
+                        },
                       ),
-                      title: Text(faculty['name']),
-                      subtitle: Text(
-                        faculty['available']
-                            ? 'Cabin: ${faculty["room"]}'
-                            : 'Currently Teaching In: ${faculty["room"]}',
-                      ),
-                      trailing: faculty['available']
-                          ? const Icon(
-                              Icons.check_circle,
-                              color: Colors.green,
-                            )
-                          : const Icon(
-                              Icons.cancel,
-                              color: Colors.red,
-                            ),
-                    ),
-                  );
-                },
-              ),
+                    );
+                  },
+                );
+              },
             ),
           ),
         ],
       ),
     );
   }
+}
+
+class FacultyScheduleTile extends StatelessWidget {
+  const FacultyScheduleTile({
+    super.key,
+    required this.schedule,
+  });
+
+  final FacultySchedule schedule;
+
+  @override
+  Widget build(BuildContext context) {
+    final runningClass = schedule.runningClass;
+    final available = runningClass == null;
+    final activeRoom = runningClass?.room ?? schedule.profile.cabinRoom;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ExpansionTile(
+        leading: CircleAvatar(
+          backgroundColor: available ? Colors.green : Colors.red,
+          child: Icon(
+            available ? Icons.check : Icons.close,
+            color: Colors.white,
+          ),
+        ),
+        title: Text(
+          schedule.profile.name,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        subtitle: Text(
+          available
+              ? 'Available${activeRoom.isEmpty ? '' : ' in $activeRoom'}'
+              : 'Teaching ${runningClass.subject} in ${runningClass.room}',
+        ),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        children: [
+          if (schedule.entries.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('No timetable entries'),
+              ),
+            )
+          else
+            ...schedule.entries.map((entry) {
+              final isLive = TimetableService.isEntryRunningNow(entry);
+
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(top: 8),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: isLive ? Colors.green.shade50 : Colors.grey.shade50,
+                  border: Border.all(
+                    color: isLive ? Colors.green : Colors.grey.shade300,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SizedBox(
+                      width: 84,
+                      child: Text(
+                        entry.day,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry.subject,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${entry.startTime} - ${entry.endTime}  |  ${entry.room}',
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (isLive)
+                      const Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Chip(
+                          label: Text('LIVE'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            }),
+        ],
+      ),
+    );
+  }
+}
+
+class FacultyProfile {
+  const FacultyProfile({
+    required this.name,
+    required this.cabinRoom,
+  });
+
+  final String name;
+  final String cabinRoom;
+}
+
+class FacultySchedule {
+  const FacultySchedule({
+    required this.profile,
+    required this.entries,
+    required this.runningClass,
+  });
+
+  final FacultyProfile profile;
+  final List<TimetableEntry> entries;
+  final TimetableEntry? runningClass;
 }

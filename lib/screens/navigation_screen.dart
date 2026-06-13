@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 import '../services/timetable_service.dart';
+import '../services/voice_navigation_service.dart';
 import 'qr_scanner_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
@@ -14,15 +16,19 @@ class NavigationScreen extends StatefulWidget {
 
 class _NavigationScreenState extends State<NavigationScreen> {
   final TimetableService _timetableService = TimetableService();
+  final VoiceNavigationService _voiceService = VoiceNavigationService();
   Timer? _clockTimer;
 
   String? _currentLocation = 'Lobby';
   String? _destination = 'E1-101';
+  String? _lastSpokenRoute;
   bool _routeToSuggestedRoom = true;
+  bool _voiceEnabled = true;
 
   static const List<String> _locations = [
     'Main Gate',
     'Lobby',
+    'Stairs',
     'HOD Office',
     'Seminar Hall',
     'E1-101',
@@ -39,6 +45,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
   static const Map<String, Offset> _mapNodes = {
     'Main Gate': Offset(0.10, 0.88),
     'Lobby': Offset(0.22, 0.68),
+    'Stairs': Offset(0.50, 0.46),
     'HOD Office': Offset(0.78, 0.20),
     'Seminar Hall': Offset(0.78, 0.80),
     'E1-101': Offset(0.18, 0.28),
@@ -63,6 +70,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _voiceService.stop();
     super.dispose();
   }
 
@@ -77,6 +85,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     if (result != null && mounted) {
       setState(() {
         _currentLocation = _matchLocation(result.toString());
+        _lastSpokenRoute = null;
       });
     }
   }
@@ -100,21 +109,163 @@ class _NavigationScreenState extends State<NavigationScreen> {
     return _destination ?? '';
   }
 
-  List<Offset> _buildRoute(String from, String to) {
+  NavigationRoute _buildRoute(String from, String to) {
     final start = _mapNodes[from];
     final end = _mapNodes[to];
 
-    if (start == null || end == null) return [];
+    if (start == null || end == null) {
+      return const NavigationRoute(points: [], instructions: []);
+    }
 
     const corridorY = 0.46;
-
-    return [
+    final stairs = _mapNodes['Stairs']!;
+    final points = <Offset>[
       start,
       Offset(start.dx, corridorY),
-      const Offset(0.50, corridorY),
+      if (from != 'Stairs' && to != 'Stairs') stairs,
       Offset(end.dx, corridorY),
       end,
-    ];
+    ].where(_isUsefulPoint).toList();
+
+    final instructions = <NavigationInstruction>[];
+
+    for (var i = 1; i < points.length; i++) {
+      final previous = points[i - 1];
+      final current = points[i];
+      if (previous == current) continue;
+
+      final reachesStairs =
+          current == stairs && from != 'Stairs' && to != 'Stairs';
+
+      instructions.add(
+        NavigationInstruction(
+          text: _instructionText(
+            previous,
+            current,
+            i == points.length - 1,
+            reachesStairs,
+          ),
+          point: current,
+        ),
+      );
+
+      if (reachesStairs) {
+        instructions.add(
+          NavigationInstruction(
+            text: 'Take stairs, then continue',
+            point: current,
+          ),
+        );
+      }
+    }
+
+    instructions.add(
+      NavigationInstruction(
+        text: 'You have arrived at $to',
+        point: end,
+      ),
+    );
+
+    return NavigationRoute(points: points, instructions: instructions);
+  }
+
+  bool _isUsefulPoint(Offset point) {
+    return point.dx.isFinite && point.dy.isFinite;
+  }
+
+  String _instructionText(
+    Offset from,
+    Offset to,
+    bool finalLeg,
+    bool reachesStairs,
+  ) {
+    final meters = _estimateMeters(from, to);
+    final dx = to.dx - from.dx;
+    final dy = to.dy - from.dy;
+
+    if (reachesStairs) {
+      return '$meters m straight to stairs';
+    }
+
+    if (finalLeg) {
+      return '$meters m straight to destination';
+    }
+
+    if (dx.abs() > dy.abs()) {
+      return dx > 0 ? '$meters m right' : '$meters m left';
+    }
+
+    return '$meters m straight';
+  }
+
+  int _estimateMeters(Offset from, Offset to) {
+    final distance = math.sqrt(
+      math.pow(to.dx - from.dx, 2) + math.pow(to.dy - from.dy, 2),
+    );
+
+    return (math.max(10, distance * 180) / 5).round() * 5;
+  }
+
+  void _speakRouteIfNeeded({
+    required String currentLocation,
+    required String routeTarget,
+    required RoomAvailability availability,
+    required List<NavigationInstruction> instructions,
+  }) {
+    if (!_voiceEnabled || instructions.isEmpty) return;
+
+    final signature = [
+      currentLocation,
+      routeTarget,
+      availability.occupied,
+      availability.nextFreeAt,
+      instructions.map((instruction) => instruction.text).join('|'),
+    ].join('::');
+
+    if (_lastSpokenRoute == signature) return;
+    _lastSpokenRoute = signature;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_voiceEnabled) return;
+      _voiceService.speak(_voiceMessage(routeTarget, availability, instructions));
+    });
+  }
+
+  String _voiceMessage(
+    String routeTarget,
+    RoomAvailability availability,
+    List<NavigationInstruction> instructions,
+  ) {
+    final conflictMessage = availability.occupied
+        ? 'Destination is occupied. '
+            '${availability.nextFreeAt == null ? '' : 'Wait until ${availability.nextFreeAt}, or '}'
+            'navigate to suggested room $routeTarget. '
+        : '';
+
+    return '$conflictMessage${instructions.map((step) => step.text).join('. ')}';
+  }
+
+  void _showWrittenDirections(List<NavigationInstruction> instructions) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+            itemCount: instructions.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              return ListTile(
+                leading: CircleAvatar(
+                  child: Text('${index + 1}'),
+                ),
+                title: Text(instructions[index].text),
+              );
+            },
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -122,6 +273,19 @@ class _NavigationScreenState extends State<NavigationScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Real-time Navigation'),
+        actions: [
+          IconButton(
+            tooltip: _voiceEnabled ? 'Voice on' : 'Voice off',
+            onPressed: () {
+              setState(() {
+                _voiceEnabled = !_voiceEnabled;
+                _lastSpokenRoute = null;
+              });
+              if (!_voiceEnabled) _voiceService.stop();
+            },
+            icon: Icon(_voiceEnabled ? Icons.volume_up : Icons.volume_off),
+          ),
+        ],
       ),
       body: StreamBuilder<List<TimetableEntry>>(
         stream: _timetableService.watchEntries(),
@@ -132,7 +296,14 @@ class _NavigationScreenState extends State<NavigationScreen> {
           final availability =
               _timetableService.availabilityForRoom(destination, entries);
           final routeTarget = _routeTarget(availability);
-          final pathPoints = _buildRoute(currentLocation, routeTarget);
+          final route = _buildRoute(currentLocation, routeTarget);
+
+          _speakRouteIfNeeded(
+            currentLocation: currentLocation,
+            routeTarget: routeTarget,
+            availability: availability,
+            instructions: route.instructions,
+          );
 
           return SafeArea(
             child: Column(
@@ -148,7 +319,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                       ),
                       Positioned.fill(
                         child: CustomPaint(
-                          painter: PathPainter(pathPoints),
+                          painter: PathPainter(route.points),
                         ),
                       ),
                       if (_mapNodes[currentLocation] != null)
@@ -166,6 +337,17 @@ class _NavigationScreenState extends State<NavigationScreen> {
                               ? Colors.green
                               : Colors.blue,
                         ),
+                      if (_mapNodes['Stairs'] != null &&
+                          currentLocation != 'Stairs' &&
+                          routeTarget != 'Stairs')
+                        LocationMarker(
+                          point: _mapNodes['Stairs']!,
+                          label: 'Stairs',
+                          color: Colors.deepOrange,
+                        ),
+                      RouteInstructionPopups(
+                        instructions: route.instructions,
+                      ),
                     ],
                   ),
                 ),
@@ -181,7 +363,10 @@ class _NavigationScreenState extends State<NavigationScreen> {
                               value: _currentLocation,
                               icon: Icons.my_location,
                               onChanged: (value) {
-                                setState(() => _currentLocation = value);
+                                setState(() {
+                                  _currentLocation = value;
+                                  _lastSpokenRoute = null;
+                                });
                               },
                             ),
                           ),
@@ -199,7 +384,11 @@ class _NavigationScreenState extends State<NavigationScreen> {
                         value: _destination,
                         icon: Icons.place,
                         onChanged: (value) {
-                          setState(() => _destination = value);
+                          setState(() {
+                            _destination = value;
+                            _routeToSuggestedRoom = true;
+                            _lastSpokenRoute = null;
+                          });
                         },
                       ),
                       const SizedBox(height: 12),
@@ -207,15 +396,34 @@ class _NavigationScreenState extends State<NavigationScreen> {
                         destination: destination,
                         routeTarget: routeTarget,
                         availability: availability,
-                        pathAvailable: pathPoints.isNotEmpty,
+                        pathAvailable: route.points.isNotEmpty,
+                        voiceEnabled: _voiceEnabled,
                         onUseDestination: () {
-                          setState(() => _routeToSuggestedRoom = false);
+                          setState(() {
+                            _routeToSuggestedRoom = false;
+                            _lastSpokenRoute = null;
+                          });
                         },
                         onUseSuggestion: availability.suggestedRoom == null
                             ? null
                             : () {
-                                setState(() => _routeToSuggestedRoom = true);
+                                setState(() {
+                                  _routeToSuggestedRoom = true;
+                                  _lastSpokenRoute = null;
+                                });
                               },
+                        onShowSteps: route.instructions.isEmpty
+                            ? null
+                            : () => _showWrittenDirections(route.instructions),
+                        onRepeatVoice: route.instructions.isEmpty
+                            ? null
+                            : () => _voiceService.speak(
+                                  _voiceMessage(
+                                    routeTarget,
+                                    availability,
+                                    route.instructions,
+                                  ),
+                                ),
                       ),
                     ],
                   ),
@@ -235,7 +443,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     required ValueChanged<String?> onChanged,
   }) {
     return DropdownButtonFormField<String>(
-      initialValue: _locations.contains(value) ? value : null,
+      value: _locations.contains(value) ? value : null,
       isExpanded: true,
       decoration: InputDecoration(
         labelText: label,
@@ -259,16 +467,22 @@ class _StatusPanel extends StatelessWidget {
     required this.routeTarget,
     required this.availability,
     required this.pathAvailable,
+    required this.voiceEnabled,
     required this.onUseDestination,
     required this.onUseSuggestion,
+    required this.onShowSteps,
+    required this.onRepeatVoice,
   });
 
   final String destination;
   final String routeTarget;
   final RoomAvailability availability;
   final bool pathAvailable;
+  final bool voiceEnabled;
   final VoidCallback onUseDestination;
   final VoidCallback? onUseSuggestion;
+  final VoidCallback? onShowSteps;
+  final VoidCallback? onRepeatVoice;
 
   @override
   Widget build(BuildContext context) {
@@ -348,6 +562,26 @@ class _StatusPanel extends StatelessWidget {
               ],
             ),
           ],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: onShowSteps,
+                  icon: const Icon(Icons.format_list_numbered),
+                  label: const Text('Steps'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: voiceEnabled ? onRepeatVoice : null,
+                  icon: const Icon(Icons.record_voice_over),
+                  label: const Text('Speak'),
+                ),
+              ),
+            ],
+          ),
           if (!pathAvailable) ...[
             const SizedBox(height: 8),
             const Text(
@@ -358,6 +592,75 @@ class _StatusPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+class RouteInstructionPopups extends StatelessWidget {
+  const RouteInstructionPopups({
+    super.key,
+    required this.instructions,
+  });
+
+  final List<NavigationInstruction> instructions;
+
+  @override
+  Widget build(BuildContext context) {
+    if (instructions.isEmpty) return const SizedBox.shrink();
+
+    return Positioned(
+      top: 12,
+      left: 12,
+      right: 12,
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: instructions.take(4).map((instruction) {
+          return DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.92),
+              border: Border.all(color: Colors.blue.withOpacity(0.35)),
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x22000000),
+                  blurRadius: 8,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _iconForInstruction(instruction.text),
+                    size: 18,
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    instruction.text,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  IconData _iconForInstruction(String text) {
+    if (text.contains('left')) return Icons.turn_left;
+    if (text.contains('right')) return Icons.turn_right;
+    if (text.contains('stairs')) return Icons.stairs;
+    if (text.contains('arrived')) return Icons.flag;
+    return Icons.straight;
   }
 }
 
@@ -468,4 +771,24 @@ class PathPainter extends CustomPainter {
   bool shouldRepaint(PathPainter oldDelegate) {
     return oldDelegate.points != points;
   }
+}
+
+class NavigationRoute {
+  const NavigationRoute({
+    required this.points,
+    required this.instructions,
+  });
+
+  final List<Offset> points;
+  final List<NavigationInstruction> instructions;
+}
+
+class NavigationInstruction {
+  const NavigationInstruction({
+    required this.text,
+    required this.point,
+  });
+
+  final String text;
+  final Offset point;
 }
