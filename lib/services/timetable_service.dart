@@ -20,14 +20,37 @@ class TimetableEntry {
 
   factory TimetableEntry.fromMap(Map<dynamic, dynamic> data) {
     return TimetableEntry(
-      day: data['day']?.toString() ?? '',
-      subject: data['subject']?.toString() ?? '',
-      faculty: data['faculty']?.toString() ?? '',
-      room: data['room']?.toString() ?? '',
-      startTime: data['startTime']?.toString() ?? '',
-      endTime: data['endTime']?.toString() ?? '',
+      day: _firstString(data, ['day', 'Day', 'weekday']),
+      subject: _firstString(data, ['subject', 'Subject', 'class', 'course']),
+      faculty: _firstString(
+        data,
+        ['faculty', 'Faculty', 'facultyName', 'teacher', 'name'],
+      ),
+      room: _firstString(
+        data,
+        ['room', 'Room', 'roomNo', 'roomNumber', 'classRoom'],
+      ),
+      startTime: _firstString(
+        data,
+        ['startTime', 'StartTime', 'start', 'from', 'timeFrom'],
+      ),
+      endTime: _firstString(
+        data,
+        ['endTime', 'EndTime', 'end', 'to', 'timeTo'],
+      ),
     );
   }
+}
+
+String _firstString(Map<dynamic, dynamic> data, List<String> keys) {
+  for (final key in keys) {
+    final value = data[key];
+    if (value != null && value.toString().trim().isNotEmpty) {
+      return value.toString().trim();
+    }
+  }
+
+  return '';
 }
 
 class RoomAvailability {
@@ -61,25 +84,28 @@ class TimetableService {
     'Sunday',
   ];
 
-  static const List<String> knownRooms = [
-    'E1-101',
-    'E1-102',
-    'E1-103',
-    'E1-104',
-    'E1-105',
-    'E1-106',
-    'E1-107',
-    'E1-108',
-    'E1-109',
-    'Seminar Hall',
-    'HOD Office',
-    'Lobby',
-  ];
+  static final List<String> knownRooms = _buildKnownRooms();
 
   Stream<List<TimetableEntry>> watchEntries() {
     return dbRef.child('timetable').onValue.map(
           (event) => parseEntries(event.snapshot.value),
         );
+  }
+
+  Stream<List<TimetableEntry>> watchAllEntries() {
+    return dbRef.onValue.map((event) {
+      final value = event.snapshot.value;
+      if (value is! Map) return <TimetableEntry>[];
+
+      final entries = <TimetableEntry>[
+        ...parseEntries(value['timetable']),
+        ...parseEntries(value['student_timetable']),
+        ...parseEntries(value['faculty_timetable']),
+      ];
+
+      entries.sort(_compareEntries);
+      return entries;
+    });
   }
 
   Future<List<TimetableEntry>> fetchEntries() async {
@@ -106,16 +132,18 @@ class TimetableService {
       }
     }
 
-    entries.sort((a, b) {
-      final dayCompare =
-          weekDays.indexOf(a.day).compareTo(weekDays.indexOf(b.day));
-      if (dayCompare != 0) return dayCompare;
-      return parseTimeToMinutes(a.startTime).compareTo(
-        parseTimeToMinutes(b.startTime),
-      );
-    });
+    entries.sort(_compareEntries);
 
     return entries;
+  }
+
+  int _compareEntries(TimetableEntry a, TimetableEntry b) {
+    final dayCompare =
+        weekDays.indexOf(a.day).compareTo(weekDays.indexOf(b.day));
+    if (dayCompare != 0) return dayCompare;
+    return parseTimeToMinutes(a.startTime).compareTo(
+      parseTimeToMinutes(b.startTime),
+    );
   }
 
   static String todayName([DateTime? dateTime]) {
@@ -235,4 +263,25 @@ class TimetableService {
 
     return const RoomAvailability(occupied: false);
   }
+}
+
+List<String> _buildKnownRooms() {
+  final rooms = <String>[
+    'Seminar Hall',
+    'Auditorium',
+    'HOD Office',
+  ];
+
+  for (final block in ['E1', 'E2', 'E3']) {
+    for (final floor in [0, 1, 2, 3]) {
+      final floorPrefix = floor == 0 ? '' : '$floor';
+      final maxRoom = block == 'E2' ? 8 : 12;
+
+      for (var room = 1; room <= maxRoom; room++) {
+        rooms.add('$block-$floorPrefix${room.toString().padLeft(2, '0')}');
+      }
+    }
+  }
+
+  return rooms;
 }

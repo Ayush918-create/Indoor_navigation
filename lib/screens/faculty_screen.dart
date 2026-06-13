@@ -5,6 +5,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 
 import '../services/timetable_service.dart';
+import 'navigation_screen.dart';
 
 class FacultyScreen extends StatefulWidget {
   const FacultyScreen({super.key});
@@ -56,11 +57,25 @@ class _FacultyScreenState extends State<FacultyScreen> {
 
       profiles[name.toLowerCase()] = FacultyProfile(
         name: name,
-        cabinRoom: item['room']?.toString() ?? '',
+        cabinRoom: _firstValue(
+          item,
+          ['room', 'cabin', 'cabinNumber', 'cabinRoom', 'facultyCabin'],
+        ),
       );
     }
 
     return profiles;
+  }
+
+  String _firstValue(Map<dynamic, dynamic> item, List<String> keys) {
+    for (final key in keys) {
+      final value = item[key];
+      if (value != null && value.toString().trim().isNotEmpty) {
+        return value.toString().trim();
+      }
+    }
+
+    return '';
   }
 
   List<FacultySchedule> _buildFacultySchedules(
@@ -147,7 +162,7 @@ class _FacultyScreenState extends State<FacultyScreen> {
               stream: dbRef.child('faculty').onValue,
               builder: (context, facultySnapshot) {
                 return StreamBuilder<List<TimetableEntry>>(
-                  stream: _timetableService.watchEntries(),
+                  stream: _timetableService.watchAllEntries(),
                   builder: (context, timetableSnapshot) {
                     if (!facultySnapshot.hasData &&
                         !timetableSnapshot.hasData) {
@@ -203,6 +218,7 @@ class FacultyScheduleTile extends StatelessWidget {
     final runningClass = schedule.runningClass;
     final available = runningClass == null;
     final activeRoom = runningClass?.room ?? schedule.profile.cabinRoom;
+    final activeLocationLabel = available ? 'Cabin' : 'Current class room';
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -223,11 +239,30 @@ class FacultyScheduleTile extends StatelessWidget {
         ),
         subtitle: Text(
           available
-              ? 'Available${activeRoom.isEmpty ? '' : ' in $activeRoom'}'
-              : 'Teaching ${runningClass.subject} in ${runningClass.room}',
+              ? 'Available${activeRoom.isEmpty ? '' : ' | Cabin: $activeRoom'}'
+              : 'Teaching ${runningClass.subject} | Room: ${runningClass.room}',
         ),
         childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
         children: [
+          if (activeRoom.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$activeLocationLabel: $activeRoom',
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () => _openNavigation(context, activeRoom),
+                    icon: const Icon(Icons.navigation),
+                    label: const Text('Navigate'),
+                  ),
+                ],
+              ),
+            ),
           if (schedule.entries.isEmpty)
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -277,6 +312,17 @@ class FacultyScheduleTile extends StatelessWidget {
                           Text(
                             '${entry.startTime} - ${entry.endTime}  |  ${entry.room}',
                           ),
+                          const SizedBox(height: 8),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: OutlinedButton.icon(
+                              onPressed: entry.room.trim().isEmpty
+                                  ? null
+                                  : () => _openNavigation(context, entry.room),
+                              icon: const Icon(Icons.navigation),
+                              label: Text('Navigate to ${entry.room}'),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -293,6 +339,15 @@ class FacultyScheduleTile extends StatelessWidget {
               );
             }),
         ],
+      ),
+    );
+  }
+
+  void _openNavigation(BuildContext context, String room) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NavigationScreen(initialDestination: room),
       ),
     );
   }

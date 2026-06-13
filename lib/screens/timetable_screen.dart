@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../services/timetable_service.dart';
+import 'navigation_screen.dart';
 
 class TimetableScreen extends StatefulWidget {
   const TimetableScreen({super.key});
@@ -29,28 +30,33 @@ class _TimetableScreenState extends State<TimetableScreen> {
     super.dispose();
   }
 
+  void _openNavigation(String room) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NavigationScreen(initialDestination: room),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Live Timetable'),
+        title: const Text('Student Timetable'),
       ),
       body: StreamBuilder<List<TimetableEntry>>(
         stream: _timetableService.watchEntries(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting &&
               !snapshot.hasData) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
+            return const Center(child: CircularProgressIndicator());
           }
 
           final entries = snapshot.data ?? [];
 
           if (entries.isEmpty) {
-            return const Center(
-              child: Text('No Timetable Found'),
-            );
+            return const Center(child: Text('No Timetable Found'));
           }
 
           final groupedData = <String, List<TimetableEntry>>{
@@ -66,8 +72,7 @@ class _TimetableScreenState extends State<TimetableScreen> {
               if (entry.value.isEmpty) return const SizedBox.shrink();
 
               return ExpansionTile(
-                initiallyExpanded:
-                    entry.key == TimetableService.todayName(),
+                initiallyExpanded: entry.key == TimetableService.todayName(),
                 title: Text(
                   entry.key,
                   style: const TextStyle(
@@ -84,34 +89,47 @@ class _TimetableScreenState extends State<TimetableScreen> {
                       horizontal: 10,
                       vertical: 5,
                     ),
-                    color: isCurrentClass
-                        ? Colors.green.shade100
-                        : Colors.white,
-                    child: ListTile(
-                      title: Text(
-                        item.subject,
-                        style: TextStyle(
-                          fontWeight: isCurrentClass
-                              ? FontWeight.bold
-                              : FontWeight.normal,
+                    color: isCurrentClass ? Colors.green.shade100 : Colors.white,
+                    child: Column(
+                      children: [
+                        ListTile(
+                          title: Text(
+                            item.subject,
+                            style: TextStyle(
+                              fontWeight: isCurrentClass
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Faculty: ${item.faculty}\n'
+                            'Room: ${item.room}\n'
+                            'Time: ${item.startTime} - ${item.endTime}',
+                          ),
+                          trailing: isCurrentClass
+                              ? const Chip(
+                                  label: Text(
+                                    'LIVE',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                  backgroundColor: Colors.green,
+                                )
+                              : null,
                         ),
-                      ),
-                      subtitle: Text(
-                        'Faculty: ${item.faculty}\n'
-                        'Room: ${item.room}\n'
-                        'Time: ${item.startTime} - ${item.endTime}',
-                      ),
-                      trailing: isCurrentClass
-                          ? const Chip(
-                              label: Text(
-                                'LIVE',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                ),
-                              ),
-                              backgroundColor: Colors.green,
-                            )
-                          : null,
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: item.room.trim().isEmpty
+                                  ? null
+                                  : () => _openNavigation(item.room),
+                              icon: const Icon(Icons.navigation),
+                              label: Text('Navigate to ${item.room}'),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   );
                 }).toList(),

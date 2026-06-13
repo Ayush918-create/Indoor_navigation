@@ -8,7 +8,14 @@ import '../services/voice_navigation_service.dart';
 import 'qr_scanner_screen.dart';
 
 class NavigationScreen extends StatefulWidget {
-  const NavigationScreen({super.key});
+  const NavigationScreen({
+    super.key,
+    this.initialDestination,
+    this.initialCurrentLocation,
+  });
+
+  final String? initialDestination;
+  final String? initialCurrentLocation;
 
   @override
   State<NavigationScreen> createState() => _NavigationScreenState();
@@ -18,51 +25,28 @@ class _NavigationScreenState extends State<NavigationScreen> {
   final TimetableService _timetableService = TimetableService();
   final VoiceNavigationService _voiceService = VoiceNavigationService();
   Timer? _clockTimer;
+  DateTime? _navigationStartedAt;
+  String? _activeRouteSignature;
+  String? _activeRouteTarget;
 
-  String? _currentLocation = 'Lobby';
-  String? _destination = 'E1-101';
+  late String? _currentLocation;
+  late String? _destination;
   String? _lastSpokenRoute;
   bool _routeToSuggestedRoom = true;
   bool _voiceEnabled = true;
+  bool _isNavigating = false;
 
-  static const List<String> _locations = [
-    'Main Gate',
-    'Lobby',
-    'Stairs',
-    'HOD Office',
-    'Seminar Hall',
-    'E1-101',
-    'E1-102',
-    'E1-103',
-    'E1-104',
-    'E1-105',
-    'E1-106',
-    'E1-107',
-    'E1-108',
-    'E1-109',
-  ];
-
-  static const Map<String, Offset> _mapNodes = {
-    'Main Gate': Offset(0.10, 0.88),
-    'Lobby': Offset(0.22, 0.68),
-    'Stairs': Offset(0.50, 0.46),
-    'HOD Office': Offset(0.78, 0.20),
-    'Seminar Hall': Offset(0.78, 0.80),
-    'E1-101': Offset(0.18, 0.28),
-    'E1-102': Offset(0.34, 0.28),
-    'E1-103': Offset(0.50, 0.28),
-    'E1-104': Offset(0.66, 0.28),
-    'E1-105': Offset(0.82, 0.28),
-    'E1-106': Offset(0.18, 0.58),
-    'E1-107': Offset(0.34, 0.58),
-    'E1-108': Offset(0.50, 0.58),
-    'E1-109': Offset(0.66, 0.58),
-  };
+  static final Map<String, _MapNode> _nodes = _buildCollegeNodes();
+  static final List<String> _locations = _buildSearchLocations(_nodes);
+  static final Map<String, Map<String, double>> _graph =
+      _buildCollegeGraph(_nodes);
 
   @override
   void initState() {
     super.initState();
-    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    _currentLocation = _matchLocation(widget.initialCurrentLocation ?? 'Main Gate');
+    _destination = _matchLocation(widget.initialDestination ?? 'E1-101');
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
   }
@@ -72,6 +56,13 @@ class _NavigationScreenState extends State<NavigationScreen> {
     _clockTimer?.cancel();
     _voiceService.stop();
     super.dispose();
+  }
+
+  void _resetNavigationProgress() {
+    _navigationStartedAt = null;
+    _activeRouteSignature = null;
+    _activeRouteTarget = null;
+    _isNavigating = false;
   }
 
   Future<void> scanCurrentLocation() async {
@@ -85,6 +76,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     if (result != null && mounted) {
       setState(() {
         _currentLocation = _matchLocation(result.toString());
+        _resetNavigationProgress();
         _lastSpokenRoute = null;
       });
     }
@@ -102,7 +94,8 @@ class _NavigationScreenState extends State<NavigationScreen> {
   String _routeTarget(RoomAvailability availability) {
     if (_routeToSuggestedRoom &&
         availability.occupied &&
-        availability.suggestedRoom != null) {
+        availability.suggestedRoom != null &&
+        _nodes.containsKey(availability.suggestedRoom)) {
       return availability.suggestedRoom!;
     }
 
@@ -110,100 +103,220 @@ class _NavigationScreenState extends State<NavigationScreen> {
   }
 
   NavigationRoute _buildRoute(String from, String to) {
-    final start = _mapNodes[from];
-    final end = _mapNodes[to];
+    final routeNames = _shortestRoute(from, to);
 
-    if (start == null || end == null) {
-      return const NavigationRoute(points: [], instructions: []);
+    if (routeNames.isEmpty) {
+      return const NavigationRoute(
+        points: [],
+        instructions: [],
+        totalMeters: 0,
+      );
     }
 
-    const corridorY = 0.46;
-    final stairs = _mapNodes['Stairs']!;
-    final points = <Offset>[
-      start,
-      Offset(start.dx, corridorY),
-      if (from != 'Stairs' && to != 'Stairs') stairs,
-      Offset(end.dx, corridorY),
-      end,
-    ].where(_isUsefulPoint).toList();
-
+    final points = routeNames.map((name) => _nodes[name]!.point).toList();
     final instructions = <NavigationInstruction>[];
+    var totalMeters = 0;
+    var pendingMeters = 0;
+    var instructionStartName = routeNames.first;
 
-    for (var i = 1; i < points.length; i++) {
-      final previous = points[i - 1];
-      final current = points[i];
-      if (previous == current) continue;
+    for (var i = 1; i < routeNames.length; i++) {
+      final fromName = routeNames[i - 1];
+      final toName = routeNames[i];
+      final meters = _edgeMeters(fromName, toName).round();
+      totalMeters += meters;
+      pendingMeters += meters;
 
-      final reachesStairs =
-          current == stairs && from != 'Stairs' && to != 'Stairs';
+      if (_nodes[toName]?.routeOnly == true && !_isStairMove(fromName, toName)) {
+        continue;
+      }
 
+      final visibleMeters = pendingMeters;
       instructions.add(
         NavigationInstruction(
           text: _instructionText(
-            previous,
-            current,
-            i == points.length - 1,
-            reachesStairs,
+            fromName: instructionStartName,
+            toName: toName,
+            meters: visibleMeters,
+            finalLeg: i == routeNames.length - 1,
           ),
-          point: current,
+          point: _nodes[toName]!.point,
         ),
       );
-
-      if (reachesStairs) {
-        instructions.add(
-          NavigationInstruction(
-            text: 'Take stairs, then continue',
-            point: current,
-          ),
-        );
-      }
+      pendingMeters = 0;
+      instructionStartName = toName;
     }
 
     instructions.add(
       NavigationInstruction(
-        text: 'You have arrived at $to',
-        point: end,
+        text: 'You have arrived at ${_displayName(to)}',
+        point: _nodes[to]!.point,
       ),
     );
 
-    return NavigationRoute(points: points, instructions: instructions);
+    return NavigationRoute(
+      points: points,
+      instructions: instructions,
+      totalMeters: totalMeters,
+    );
   }
 
-  bool _isUsefulPoint(Offset point) {
-    return point.dx.isFinite && point.dy.isFinite;
-  }
+  List<String> _shortestRoute(String from, String to) {
+    if (!_nodes.containsKey(from) || !_nodes.containsKey(to)) return [];
+    if (from == to) return [from];
 
-  String _instructionText(
-    Offset from,
-    Offset to,
-    bool finalLeg,
-    bool reachesStairs,
-  ) {
-    final meters = _estimateMeters(from, to);
-    final dx = to.dx - from.dx;
-    final dy = to.dy - from.dy;
+    final distances = <String, double>{
+      for (final node in _nodes.keys) node: double.infinity,
+    };
+    final previous = <String, String?>{};
+    final unvisited = _nodes.keys.toSet();
 
-    if (reachesStairs) {
-      return '$meters m straight to stairs';
+    distances[from] = 0;
+
+    while (unvisited.isNotEmpty) {
+      final current = unvisited.reduce(
+        (a, b) => distances[a]! <= distances[b]! ? a : b,
+      );
+
+      if (distances[current] == double.infinity || current == to) break;
+      unvisited.remove(current);
+
+      for (final entry in (_graph[current] ?? const <String, double>{}).entries) {
+        final neighbor = entry.key;
+        if (!unvisited.contains(neighbor)) continue;
+
+        final nextDistance = distances[current]! + entry.value;
+        if (nextDistance < distances[neighbor]!) {
+          distances[neighbor] = nextDistance;
+          previous[neighbor] = current;
+        }
+      }
     }
+
+    final route = <String>[];
+    String? cursor = to;
+
+    while (cursor != null) {
+      route.insert(0, cursor);
+      if (cursor == from) break;
+      cursor = previous[cursor];
+    }
+
+    return route.isNotEmpty && route.first == from ? route : [];
+  }
+
+  String _instructionText({
+    required String fromName,
+    required String toName,
+    required int meters,
+    required bool finalLeg,
+  }) {
+    final from = _nodes[fromName]!;
+    final to = _nodes[toName]!;
+
+    if (_isStairMove(fromName, toName)) {
+      final targetFloor = _floorLabel(to.floor);
+      final action = to.floor > from.floor ? 'Go up stairs' : 'Go down stairs';
+      return '$action $meters m to $targetFloor';
+    }
+
+    final dx = to.point.dx - from.point.dx;
+    final dy = to.point.dy - from.point.dy;
+    final direction = dx.abs() >= dy.abs()
+        ? (dx >= 0 ? 'right' : 'left')
+        : (dy >= 0 ? 'straight' : 'straight');
 
     if (finalLeg) {
-      return '$meters m straight to destination';
+      return '$meters m $direction to ${_displayName(toName)}';
     }
 
-    if (dx.abs() > dy.abs()) {
-      return dx > 0 ? '$meters m right' : '$meters m left';
-    }
-
-    return '$meters m straight';
+    return '$meters m $direction toward ${_displayName(toName)}';
   }
 
-  int _estimateMeters(Offset from, Offset to) {
-    final distance = math.sqrt(
+  bool _isStairMove(String fromName, String toName) {
+    final from = _nodes[fromName];
+    final to = _nodes[toName];
+
+    return from != null &&
+        to != null &&
+        from.stairGroup != null &&
+        from.stairGroup == to.stairGroup &&
+        from.floor != to.floor;
+  }
+
+  double _edgeMeters(String from, String to) {
+    return _graph[from]?[to] ??
+        _pointDistance(_nodes[from]!.point, _nodes[to]!.point) * 180;
+  }
+
+  int _routeSeconds(int meters) {
+    return math.max(10, (meters / 1.2).round());
+  }
+
+  String _routeSignature(String currentLocation, String routeTarget) {
+    return '$currentLocation::$routeTarget';
+  }
+
+  double _routeProgress(String signature, int totalSeconds) {
+    if (!_isNavigating ||
+        _activeRouteSignature != signature ||
+        _navigationStartedAt == null) {
+      return 0;
+    }
+
+    final elapsed = DateTime.now().difference(_navigationStartedAt!).inSeconds;
+    final progress = elapsed / math.max(1, totalSeconds);
+
+    if (progress >= 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          _isNavigating = false;
+          _currentLocation = _activeRouteTarget ?? _destination;
+          _activeRouteTarget = null;
+        });
+      });
+    }
+
+    return progress.clamp(0, 1).toDouble();
+  }
+
+  Offset? _pointAtProgress(List<Offset> points, double progress) {
+    if (points.isEmpty) return null;
+    if (points.length == 1 || progress <= 0) return points.first;
+    if (progress >= 1) return points.last;
+
+    final totalDistance = _polylineDistance(points);
+    final targetDistance = totalDistance * progress;
+    var traveled = 0.0;
+
+    for (var i = 1; i < points.length; i++) {
+      final segmentDistance = _pointDistance(points[i - 1], points[i]);
+      if (traveled + segmentDistance >= targetDistance) {
+        final localProgress =
+            (targetDistance - traveled) / math.max(segmentDistance, 0.0001);
+        return Offset.lerp(points[i - 1], points[i], localProgress) ?? points[i];
+      }
+
+      traveled += segmentDistance;
+    }
+
+    return points.last;
+  }
+
+  double _polylineDistance(List<Offset> points) {
+    var distance = 0.0;
+
+    for (var i = 1; i < points.length; i++) {
+      distance += _pointDistance(points[i - 1], points[i]);
+    }
+
+    return distance;
+  }
+
+  double _pointDistance(Offset from, Offset to) {
+    return math.sqrt(
       math.pow(to.dx - from.dx, 2) + math.pow(to.dy - from.dy, 2),
     );
-
-    return (math.max(10, distance * 180) / 5).round() * 5;
   }
 
   void _speakRouteIfNeeded({
@@ -253,7 +366,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
           child: ListView.separated(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
             itemCount: instructions.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, index) {
               return ListTile(
                 leading: CircleAvatar(
@@ -272,7 +385,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Real-time Navigation'),
+        title: const Text('College Block Navigation'),
         actions: [
           IconButton(
             tooltip: _voiceEnabled ? 'Voice on' : 'Voice off',
@@ -297,6 +410,20 @@ class _NavigationScreenState extends State<NavigationScreen> {
               _timetableService.availabilityForRoom(destination, entries);
           final routeTarget = _routeTarget(availability);
           final route = _buildRoute(currentLocation, routeTarget);
+          final routeSignature = _routeSignature(currentLocation, routeTarget);
+          final totalMeters = route.totalMeters;
+          final totalSeconds = _routeSeconds(totalMeters);
+          final progress = _routeProgress(routeSignature, totalSeconds);
+          final remainingMeters = (totalMeters * (1 - progress))
+              .round()
+              .clamp(0, totalMeters)
+              .toInt();
+          final remainingSeconds = (totalSeconds * (1 - progress))
+              .round()
+              .clamp(0, totalSeconds)
+              .toInt();
+          final movingPoint =
+              _pointAtProgress(route.points, progress) ?? _nodes[currentLocation]?.point;
 
           _speakRouteIfNeeded(
             currentLocation: currentLocation,
@@ -309,46 +436,42 @@ class _NavigationScreenState extends State<NavigationScreen> {
             child: Column(
               children: [
                 Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: Image.asset(
-                          'assets/images/floor_map.png',
-                          fit: BoxFit.cover,
+                  child: InteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 4,
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: Image.asset(
+                            'assets/images/floor_map.png',
+                            fit: BoxFit.contain,
+                          ),
                         ),
-                      ),
-                      Positioned.fill(
-                        child: CustomPaint(
-                          painter: PathPainter(route.points),
+                        Positioned.fill(
+                          child: CustomPaint(
+                            painter: PathPainter(route.points),
+                          ),
                         ),
-                      ),
-                      if (_mapNodes[currentLocation] != null)
-                        LocationMarker(
-                          point: _mapNodes[currentLocation]!,
-                          label: 'You',
-                          color: Colors.red,
+                        if (movingPoint != null)
+                          LocationMarker(
+                            point: movingPoint,
+                            label: 'You',
+                            color: Colors.red,
+                          ),
+                        if (_nodes[routeTarget] != null)
+                          LocationMarker(
+                            point: _nodes[routeTarget]!.point,
+                            label: _displayName(routeTarget),
+                            color: availability.occupied &&
+                                    routeTarget != destination
+                                ? Colors.green
+                                : Colors.blue,
+                          ),
+                        RouteInstructionPopups(
+                          instructions: route.instructions,
                         ),
-                      if (_mapNodes[routeTarget] != null)
-                        LocationMarker(
-                          point: _mapNodes[routeTarget]!,
-                          label: routeTarget,
-                          color: availability.occupied &&
-                                  routeTarget != destination
-                              ? Colors.green
-                              : Colors.blue,
-                        ),
-                      if (_mapNodes['Stairs'] != null &&
-                          currentLocation != 'Stairs' &&
-                          routeTarget != 'Stairs')
-                        LocationMarker(
-                          point: _mapNodes['Stairs']!,
-                          label: 'Stairs',
-                          color: Colors.deepOrange,
-                        ),
-                      RouteInstructionPopups(
-                        instructions: route.instructions,
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
                 Padding(
@@ -365,6 +488,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                               onChanged: (value) {
                                 setState(() {
                                   _currentLocation = value;
+                                  _resetNavigationProgress();
                                   _lastSpokenRoute = null;
                                 });
                               },
@@ -387,6 +511,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                           setState(() {
                             _destination = value;
                             _routeToSuggestedRoom = true;
+                            _resetNavigationProgress();
                             _lastSpokenRoute = null;
                           });
                         },
@@ -398,9 +523,29 @@ class _NavigationScreenState extends State<NavigationScreen> {
                         availability: availability,
                         pathAvailable: route.points.isNotEmpty,
                         voiceEnabled: _voiceEnabled,
+                        isNavigating: _isNavigating &&
+                            _activeRouteSignature == routeSignature,
+                        totalMeters: totalMeters,
+                        remainingMeters: remainingMeters,
+                        remainingSeconds: remainingSeconds,
+                        onStartNavigation: route.points.isEmpty
+                            ? null
+                            : () {
+                                setState(() {
+                                  _isNavigating = true;
+                                  _navigationStartedAt = DateTime.now();
+                                  _activeRouteSignature = routeSignature;
+                                  _activeRouteTarget = routeTarget;
+                                  _lastSpokenRoute = null;
+                                });
+                              },
+                        onStopNavigation: () {
+                          setState(_resetNavigationProgress);
+                        },
                         onUseDestination: () {
                           setState(() {
                             _routeToSuggestedRoom = false;
+                            _resetNavigationProgress();
                             _lastSpokenRoute = null;
                           });
                         },
@@ -409,6 +554,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
                             : () {
                                 setState(() {
                                   _routeToSuggestedRoom = true;
+                                  _resetNavigationProgress();
                                   _lastSpokenRoute = null;
                                 });
                               },
@@ -443,7 +589,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     required ValueChanged<String?> onChanged,
   }) {
     return DropdownButtonFormField<String>(
-      value: _locations.contains(value) ? value : null,
+      initialValue: _locations.contains(value) ? value : null,
       isExpanded: true,
       decoration: InputDecoration(
         labelText: label,
@@ -453,7 +599,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
       items: _locations.map((location) {
         return DropdownMenuItem<String>(
           value: location,
-          child: Text(location),
+          child: Text(_displayName(location)),
         );
       }).toList(),
       onChanged: onChanged,
@@ -468,6 +614,12 @@ class _StatusPanel extends StatelessWidget {
     required this.availability,
     required this.pathAvailable,
     required this.voiceEnabled,
+    required this.isNavigating,
+    required this.totalMeters,
+    required this.remainingMeters,
+    required this.remainingSeconds,
+    required this.onStartNavigation,
+    required this.onStopNavigation,
     required this.onUseDestination,
     required this.onUseSuggestion,
     required this.onShowSteps,
@@ -479,6 +631,12 @@ class _StatusPanel extends StatelessWidget {
   final RoomAvailability availability;
   final bool pathAvailable;
   final bool voiceEnabled;
+  final bool isNavigating;
+  final int totalMeters;
+  final int remainingMeters;
+  final int remainingSeconds;
+  final VoidCallback? onStartNavigation;
+  final VoidCallback onStopNavigation;
   final VoidCallback onUseDestination;
   final VoidCallback? onUseSuggestion;
   final VoidCallback? onShowSteps;
@@ -491,9 +649,8 @@ class _StatusPanel extends StatelessWidget {
         ? '$destination is occupied'
         : '$destination is free now';
     final faculty = availability.currentClass?.faculty;
-    final facultyText = faculty == null || faculty.isEmpty
-        ? ''
-        : ' with $faculty';
+    final facultyText =
+        faculty == null || faculty.isEmpty ? '' : ' with $faculty';
     final waitText = availability.nextFreeAt == null
         ? '.'
         : '. Wait until ${availability.nextFreeAt}.';
@@ -502,6 +659,9 @@ class _StatusPanel extends StatelessWidget {
         ? '${availability.currentClass?.subject ?? 'Class'} is running'
             '$facultyText$waitText'
         : 'Route is ready from your current location.';
+    final etaText = remainingSeconds >= 60
+        ? '${(remainingSeconds / 60).ceil()} min'
+        : '$remainingSeconds sec';
 
     return Container(
       width: double.infinity,
@@ -534,6 +694,33 @@ class _StatusPanel extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(detail),
+          if (pathAvailable) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _MetricTile(
+                    label: 'Route',
+                    value: '$totalMeters m',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _MetricTile(
+                    label: 'Remaining',
+                    value: '$remainingMeters m',
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _MetricTile(
+                    label: 'ETA',
+                    value: etaText,
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (availability.occupied && availability.suggestedRoom != null) ...[
             const SizedBox(height: 8),
             Text(
@@ -582,6 +769,16 @@ class _StatusPanel extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: isNavigating ? onStopNavigation : onStartNavigation,
+              icon: Icon(isNavigating ? Icons.stop : Icons.navigation),
+              label:
+                  Text(isNavigating ? 'Stop Navigation' : 'Start Navigation'),
+            ),
+          ),
           if (!pathAvailable) ...[
             const SizedBox(height: 8),
             const Text(
@@ -606,6 +803,7 @@ class RouteInstructionPopups extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (instructions.isEmpty) return const SizedBox.shrink();
+    final visibleInstructions = _visibleInstructions();
 
     return Positioned(
       top: 12,
@@ -614,7 +812,7 @@ class RouteInstructionPopups extends StatelessWidget {
       child: Wrap(
         spacing: 8,
         runSpacing: 8,
-        children: instructions.take(4).map((instruction) {
+        children: visibleInstructions.map((instruction) {
           return DecoratedBox(
             decoration: BoxDecoration(
               color: Colors.white.withOpacity(0.92),
@@ -655,12 +853,83 @@ class RouteInstructionPopups extends StatelessWidget {
     );
   }
 
+  List<NavigationInstruction> _visibleInstructions() {
+    if (instructions.length <= 4) return instructions;
+
+    final selected = <NavigationInstruction>[];
+
+    void add(NavigationInstruction instruction) {
+      if (!selected.contains(instruction) && selected.length < 4) {
+        selected.add(instruction);
+      }
+    }
+
+    add(instructions.first);
+
+    for (final instruction in instructions) {
+      final text = instruction.text.toLowerCase();
+      if (text.contains('stairs')) add(instruction);
+    }
+
+    if (instructions.length > 1) {
+      add(instructions[instructions.length - 2]);
+    }
+
+    add(instructions.last);
+
+    for (final instruction in instructions) {
+      add(instruction);
+    }
+
+    return selected;
+  }
+
   IconData _iconForInstruction(String text) {
     if (text.contains('left')) return Icons.turn_left;
     if (text.contains('right')) return Icons.turn_right;
     if (text.contains('stairs')) return Icons.stairs;
     if (text.contains('arrived')) return Icons.flag;
     return Icons.straight;
+  }
+}
+
+class _MetricTile extends StatelessWidget {
+  const _MetricTile({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.72),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.black12),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        child: Column(
+          children: [
+            Text(
+              label,
+              style: const TextStyle(fontSize: 11),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              value,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -754,7 +1023,7 @@ class PathPainter extends CustomPainter {
 
     final path = Path()..moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
 
-    for (int i = 1; i < scaledPoints.length; i++) {
+    for (var i = 1; i < scaledPoints.length; i++) {
       path.lineTo(scaledPoints[i].dx, scaledPoints[i].dy);
     }
 
@@ -777,10 +1046,12 @@ class NavigationRoute {
   const NavigationRoute({
     required this.points,
     required this.instructions,
+    required this.totalMeters,
   });
 
   final List<Offset> points;
   final List<NavigationInstruction> instructions;
+  final int totalMeters;
 }
 
 class NavigationInstruction {
@@ -791,4 +1062,302 @@ class NavigationInstruction {
 
   final String text;
   final Offset point;
+}
+
+class _MapNode {
+  const _MapNode({
+    required this.name,
+    required this.point,
+    required this.floor,
+    this.routeOnly = false,
+    this.stairGroup,
+  });
+
+  final String name;
+  final Offset point;
+  final int floor;
+  final bool routeOnly;
+  final String? stairGroup;
+}
+
+Map<String, _MapNode> _buildCollegeNodes() {
+  final nodes = <String, _MapNode>{};
+  const floorCorridorY = {
+    0: 0.193,
+    1: 0.458,
+    2: 0.678,
+    3: 0.887,
+  };
+  const floorTopY = {
+    0: 0.135,
+    1: 0.402,
+    2: 0.633,
+    3: 0.846,
+  };
+  const floorBottomY = {
+    0: 0.252,
+    1: 0.505,
+    2: 0.725,
+    3: 0.934,
+  };
+  const sideTopY = {
+    0: 0.174,
+    1: 0.440,
+    2: 0.662,
+    3: 0.872,
+  };
+  const sideBottomY = {
+    0: 0.247,
+    1: 0.506,
+    2: 0.728,
+    3: 0.933,
+  };
+  const blockX = {
+    'E1': [0.198, 0.244, 0.291, 0.337],
+    'E2': [0.444, 0.494, 0.544, 0.594],
+    'E3': [0.694, 0.742, 0.790, 0.837],
+  };
+  const sideX = {
+    'E1': [0.108, 0.151],
+    'E3': [0.872, 0.920],
+  };
+  const stairX = {
+    'left': 0.058,
+    'e1e2': 0.390,
+    'e2e3': 0.639,
+    'right': 0.951,
+  };
+
+  void add(
+    String name,
+    Offset point,
+    int floor, {
+    bool routeOnly = false,
+    String? stairGroup,
+  }) {
+    nodes[name] = _MapNode(
+      name: name,
+      point: point,
+      floor: floor,
+      routeOnly: routeOnly,
+      stairGroup: stairGroup,
+    );
+  }
+
+  add('Main Gate', const Offset(0.036, 0.193), 0);
+  add('E1 Block Entrance', const Offset(0.071, 0.193), 0, routeOnly: true);
+  add('Lobby', const Offset(0.083, 0.193), 0);
+
+  for (final floor in [0, 1, 2, 3]) {
+    final corridorY = floorCorridorY[floor]!;
+    final topY = floorTopY[floor]!;
+    final bottomY = floorBottomY[floor]!;
+    final topSide = sideTopY[floor]!;
+    final bottomSide = sideBottomY[floor]!;
+
+    for (final stair in stairX.entries) {
+      add(
+        'F$floor-${stair.key}-stairs',
+        Offset(stair.value, corridorY),
+        floor,
+        routeOnly: true,
+        stairGroup: stair.key,
+      );
+    }
+
+    for (final block in ['E1', 'E2', 'E3']) {
+      final xs = blockX[block]!;
+      for (var i = 0; i < xs.length; i++) {
+        add(
+          'F$floor-$block-C${i + 1}',
+          Offset(xs[i], corridorY),
+          floor,
+          routeOnly: true,
+        );
+      }
+    }
+
+    add('F$floor-E1-side-corridor', Offset(0.132, corridorY), floor,
+        routeOnly: true);
+    add('F$floor-E3-side-corridor', Offset(0.897, corridorY), floor,
+        routeOnly: true);
+
+    for (final block in ['E1', 'E2', 'E3']) {
+      final floorPrefix = floor == 0 ? '' : '$floor';
+      final xs = blockX[block]!;
+
+      for (var room = 1; room <= 8; room++) {
+        final roomSuffix = '$floorPrefix${room.toString().padLeft(2, '0')}';
+        final name = '$block-$roomSuffix';
+        final column = (room - 1) % 4;
+        final y = room <= 4 ? topY : bottomY;
+
+        add(name, Offset(xs[column], y), floor);
+      }
+    }
+
+    for (final block in ['E1', 'E3']) {
+      final floorPrefix = floor == 0 ? '' : '$floor';
+      final xs = sideX[block]!;
+      final sideRooms = {
+        9: Offset(xs[0], topSide),
+        10: Offset(xs[1], topSide),
+        11: Offset(xs[0], bottomSide),
+        12: Offset(xs[1], bottomSide),
+      };
+
+      for (final entry in sideRooms.entries) {
+        final roomSuffix =
+            '$floorPrefix${entry.key.toString().padLeft(2, '0')}';
+        add('$block-$roomSuffix', entry.value, floor);
+      }
+    }
+  }
+
+  add('Seminar Hall', const Offset(0.446, 0.136), 0);
+  add('Auditorium', const Offset(0.544, 0.136), 0);
+  add('HOD Office', const Offset(0.909, 0.846), 3);
+
+  return nodes;
+}
+
+List<String> _buildSearchLocations(Map<String, _MapNode> nodes) {
+  final locations = nodes.values
+      .where((node) => !node.routeOnly || node.stairGroup != null)
+      .map((node) => node.name)
+      .toList()
+    ..sort(_locationSort);
+
+  return locations;
+}
+
+Map<String, Map<String, double>> _buildCollegeGraph(Map<String, _MapNode> nodes) {
+  final graph = <String, Map<String, double>>{};
+
+  void connect(String a, String b, double meters) {
+    graph.putIfAbsent(a, () => {})[b] = meters;
+    graph.putIfAbsent(b, () => {})[a] = meters;
+  }
+
+  connect('Main Gate', 'E1 Block Entrance', 5);
+  connect('E1 Block Entrance', 'Lobby', 5);
+  connect('Lobby', 'F0-left-stairs', 5);
+
+  for (final floor in [0, 1, 2, 3]) {
+    connect('F$floor-left-stairs', 'F$floor-E1-side-corridor', 5);
+    connect('F$floor-E1-side-corridor', 'F$floor-E1-C1', 15);
+    connect('F$floor-E1-C1', 'F$floor-E1-C2', 15);
+    connect('F$floor-E1-C2', 'F$floor-E1-C3', 15);
+    connect('F$floor-E1-C3', 'F$floor-E1-C4', 15);
+    connect('F$floor-E1-C4', 'F$floor-e1e2-stairs', 15);
+
+    connect('F$floor-e1e2-stairs', 'F$floor-E2-C1', 15);
+    connect('F$floor-E2-C1', 'F$floor-E2-C2', 15);
+    connect('F$floor-E2-C2', 'F$floor-E2-C3', 15);
+    connect('F$floor-E2-C3', 'F$floor-E2-C4', 15);
+    connect('F$floor-E2-C4', 'F$floor-e2e3-stairs', 15);
+
+    connect('F$floor-e2e3-stairs', 'F$floor-E3-C1', 15);
+    connect('F$floor-E3-C1', 'F$floor-E3-C2', 15);
+    connect('F$floor-E3-C2', 'F$floor-E3-C3', 15);
+    connect('F$floor-E3-C3', 'F$floor-E3-C4', 15);
+    connect('F$floor-E3-C4', 'F$floor-E3-side-corridor', 15);
+    connect('F$floor-E3-side-corridor', 'F$floor-right-stairs', 5);
+
+    for (final block in ['E1', 'E2', 'E3']) {
+      final floorPrefix = floor == 0 ? '' : '$floor';
+      for (var room = 1; room <= 8; room++) {
+        final suffix = '$floorPrefix${room.toString().padLeft(2, '0')}';
+        final roomName = '$block-$suffix';
+        final corridor = 'F$floor-$block-C${((room - 1) % 4) + 1}';
+        if (nodes.containsKey(roomName)) connect(roomName, corridor, 5);
+      }
+    }
+
+    for (final block in ['E1', 'E3']) {
+      final floorPrefix = floor == 0 ? '' : '$floor';
+      final corridor =
+          block == 'E1' ? 'F$floor-E1-side-corridor' : 'F$floor-E3-side-corridor';
+      for (final room in [9, 10, 11, 12]) {
+        final suffix = '$floorPrefix${room.toString().padLeft(2, '0')}';
+        final roomName = '$block-$suffix';
+        if (nodes.containsKey(roomName)) connect(roomName, corridor, 5);
+      }
+    }
+  }
+
+  connect('Seminar Hall', 'F0-E2-C1', 5);
+  connect('Seminar Hall', 'F0-E2-C2', 5);
+  connect('Auditorium', 'F0-E2-C3', 5);
+  connect('Auditorium', 'F0-E2-C4', 5);
+  connect('HOD Office', 'E3-310', 2);
+
+  for (final stair in ['left', 'e1e2', 'e2e3', 'right']) {
+    connect('F0-$stair-stairs', 'F1-$stair-stairs', 5);
+    connect('F1-$stair-stairs', 'F2-$stair-stairs', 5);
+    connect('F2-$stair-stairs', 'F3-$stair-stairs', 5);
+  }
+
+  return graph;
+}
+
+String _displayName(String name) {
+  if (!name.startsWith('F')) return name;
+  final parts = name.split('-');
+  if (parts.length < 2) return name;
+
+  if (name.contains('stairs')) {
+    final floor = int.tryParse(parts.first.substring(1)) ?? 0;
+    final stairLabel = _stairLabel(parts[1]);
+    return '${_floorLabel(floor)} $stairLabel stairs';
+  }
+
+  return '${_floorLabel(int.tryParse(parts.first.substring(1)) ?? 0)} corridor';
+}
+
+String _stairLabel(String stairGroup) {
+  switch (stairGroup) {
+    case 'left':
+      return 'left';
+    case 'e1e2':
+      return 'E1-E2';
+    case 'e2e3':
+      return 'E2-E3';
+    case 'right':
+      return 'right';
+    default:
+      return stairGroup;
+  }
+}
+
+String _floorLabel(int floor) {
+  switch (floor) {
+    case 0:
+      return 'ground floor';
+    case 1:
+      return 'first floor';
+    case 2:
+      return 'second floor';
+    case 3:
+      return 'third floor';
+    default:
+      return 'floor $floor';
+  }
+}
+
+int _locationSort(String a, String b) {
+  final priority = {
+    'Main Gate': 0,
+    'E1 Block Entrance': 1,
+    'Lobby': 2,
+    'Seminar Hall': 3,
+    'Auditorium': 4,
+    'HOD Office': 5,
+  };
+
+  final aPriority = priority[a] ?? 20;
+  final bPriority = priority[b] ?? 20;
+  if (aPriority != bPriority) return aPriority.compareTo(bPriority);
+
+  return a.compareTo(b);
 }
