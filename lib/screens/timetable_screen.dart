@@ -104,7 +104,8 @@ class _TimetableScreenState extends State<TimetableScreen> {
                           subtitle: Text(
                             'Faculty: ${item.faculty}\n'
                             'Room: ${item.room}\n'
-                            'Time: ${item.startTime} - ${item.endTime}',
+                            'Time: ${TimetableService.formatTime12Hour(item.startTime)}'
+                            ' - ${TimetableService.formatTime12Hour(item.endTime)}',
                           ),
                           trailing: isCurrentClass
                               ? const Chip(

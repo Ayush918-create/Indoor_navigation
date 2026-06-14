@@ -70,6 +70,13 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Stack(
           children: [
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+              ),
+            ),
             Positioned(
               top: 8,
               right: 8,
@@ -84,82 +91,91 @@ class _LoginScreenState extends State<LoginScreen> {
                 padding: const EdgeInsets.all(24),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 460),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Image.asset(
-                        'assets/images/logo.png',
-                        height: 110,
-                      ),
-                      const SizedBox(height: 24),
-                      Text(
-                        'Indoor Navigation',
-                        textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.headlineSmall,
-                      ),
-                      const SizedBox(height: 24),
-                      SegmentedButton<UserRole>(
-                        segments: const [
-                          ButtonSegment(
-                            value: UserRole.student,
-                            icon: Icon(Icons.school),
-                            label: Text('Student'),
+                  child: Card(
+                    elevation: 2,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Image.asset(
+                            'assets/images/logo.png',
+                            height: 96,
                           ),
-                          ButtonSegment(
-                            value: UserRole.faculty,
-                            icon: Icon(Icons.badge),
-                            label: Text('Faculty'),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Indoor Navigation',
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.headlineSmall,
+                          ),
+                          const SizedBox(height: 20),
+                          SegmentedButton<UserRole>(
+                            segments: const [
+                              ButtonSegment(
+                                value: UserRole.student,
+                                icon: Icon(Icons.school),
+                                label: Text('Student'),
+                              ),
+                              ButtonSegment(
+                                value: UserRole.faculty,
+                                icon: Icon(Icons.badge),
+                                label: Text('Faculty'),
+                              ),
+                            ],
+                            selected: {selectedRole},
+                            onSelectionChanged: loading
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      selectedRole = value.first;
+                                    });
+                                  },
+                          ),
+                          const SizedBox(height: 16),
+                          TextField(
+                            controller: emailController,
+                            keyboardType: TextInputType.emailAddress,
+                            decoration: const InputDecoration(
+                              labelText: 'Email',
+                              prefixIcon: Icon(Icons.email),
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: passwordController,
+                            obscureText: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Password',
+                              prefixIcon: Icon(Icons.lock),
+                              border: OutlineInputBorder(),
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          FilledButton.icon(
+                            onPressed:
+                                loading ? null : () => loginUser(selectedRole),
+                            icon: loading
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Icon(
+                                    selectedRole == UserRole.student
+                                        ? Icons.school
+                                        : Icons.badge,
+                                  ),
+                            label: Text('Login as ${selectedRole.label}'),
                           ),
                         ],
-                        selected: {selectedRole},
-                        onSelectionChanged: loading
-                            ? null
-                            : (value) {
-                                setState(() {
-                                  selectedRole = value.first;
-                                });
-                              },
                       ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: emailController,
-                        keyboardType: TextInputType.emailAddress,
-                        decoration: const InputDecoration(
-                          labelText: 'Email',
-                          prefixIcon: Icon(Icons.email),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: passwordController,
-                        obscureText: true,
-                        decoration: const InputDecoration(
-                          labelText: 'Password',
-                          prefixIcon: Icon(Icons.lock),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      FilledButton.icon(
-                        onPressed:
-                            loading ? null : () => loginUser(selectedRole),
-                        icon: loading
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            : Icon(
-                                selectedRole == UserRole.student
-                                    ? Icons.school
-                                    : Icons.badge,
-                              ),
-                        label: Text('Login as ${selectedRole.label}'),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),

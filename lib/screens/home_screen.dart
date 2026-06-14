@@ -5,6 +5,7 @@ import '../services/auth_service.dart';
 import '../services/permission_service.dart';
 import 'admin_management_screens.dart';
 import 'faculty_screen.dart';
+import 'help_screen.dart';
 import 'login_screen.dart';
 import 'navigation_screen.dart';
 import 'profile_screen.dart';
@@ -34,50 +35,87 @@ class HomeScreen extends StatelessWidget {
         builder: (context, constraints) {
           final crossAxisCount = constraints.maxWidth > 720 ? 3 : 2;
 
-          return GridView.builder(
-            padding: const EdgeInsets.all(16),
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: crossAxisCount,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-            ),
-            itemCount: items.length,
-            itemBuilder: (context, index) {
-              final item = items[index];
-
-              return Card(
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => item.screen),
-                    );
-                  },
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+          return CustomScrollView(
+            slivers: [
+              SliverToBoxAdapter(
+                child: Container(
+                  margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
                     children: [
-                      Icon(item.icon, size: 48, color: item.color),
-                      const SizedBox(height: 12),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: Text(
-                          item.title,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      CircleAvatar(
+                        child: Text(user.role.label.characters.first),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              user.name,
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            Text('${user.role.label} Access'),
+                          ],
                         ),
                       ),
                     ],
                   ),
                 ),
-              );
-            },
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.all(16),
+                sliver: SliverGrid.builder(
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: crossAxisCount,
+                    crossAxisSpacing: 12,
+                    mainAxisSpacing: 12,
+                  ),
+                  itemCount: items.length,
+                  itemBuilder: (context, index) {
+                    final item = items[index];
+
+                    return Card(
+                      elevation: 1,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => item.screen),
+                          );
+                        },
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(item.icon, size: 46, color: item.color),
+                            const SizedBox(height: 12),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              child: Text(
+                                item.title,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
           );
         },
       ),
@@ -93,15 +131,9 @@ class HomeScreen extends StatelessWidget {
         screen: const NavigationScreen(),
       ),
       _DashboardItem(
-        title: 'Faculty Search',
+        title: 'Faculty',
         icon: Icons.person_search,
         color: Colors.green,
-        screen: const FacultyScreen(),
-      ),
-      _DashboardItem(
-        title: 'Faculty Timetable',
-        icon: Icons.badge,
-        color: Colors.teal,
         screen: const FacultyScreen(),
       ),
       _DashboardItem(
@@ -109,12 +141,6 @@ class HomeScreen extends StatelessWidget {
         icon: Icons.schedule,
         color: Colors.orange,
         screen: const TimetableScreen(),
-      ),
-      _DashboardItem(
-        title: 'Room Conflicts',
-        icon: Icons.report_problem,
-        color: Colors.deepOrange,
-        screen: RoomConflictScreen(user: user),
       ),
       _DashboardItem(
         title: 'Profile',
@@ -131,12 +157,6 @@ class HomeScreen extends StatelessWidget {
           icon: Icons.meeting_room,
           color: Colors.indigo,
           screen: RoomStatusScreen(user: user),
-        ),
-        _DashboardItem(
-          title: 'Temporary Room Allocation',
-          icon: Icons.event_available,
-          color: Colors.brown,
-          screen: RoomAllocationScreen(user: user),
         ),
         _DashboardItem(
           title: 'Student Profiles',
@@ -213,19 +233,33 @@ class _RoleDrawer extends StatelessWidget {
             ),
             Expanded(
               child: ListView(
-                children: items.map((item) {
-                  return ListTile(
-                    leading: Icon(item.icon, color: item.color),
-                    title: Text(item.title),
+                children: [
+                  ...items.map((item) {
+                    return ListTile(
+                      leading: Icon(item.icon, color: item.color),
+                      title: Text(item.title),
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (_) => item.screen),
+                        );
+                      },
+                    );
+                  }),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.help),
+                    title: const Text('Help'),
                     onTap: () {
                       Navigator.pop(context);
                       Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => item.screen),
+                        MaterialPageRoute(builder: (_) => const HelpScreen()),
                       );
                     },
-                  );
-                }).toList(),
+                  ),
+                ],
               ),
             ),
             const Divider(height: 1),

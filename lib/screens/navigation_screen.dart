@@ -44,8 +44,12 @@ class _NavigationScreenState extends State<NavigationScreen> {
   @override
   void initState() {
     super.initState();
-    _currentLocation = _matchLocation(widget.initialCurrentLocation ?? 'Main Gate');
-    _destination = _matchLocation(widget.initialDestination ?? 'E1-101');
+    _currentLocation = widget.initialCurrentLocation == null
+        ? null
+        : _matchLocation(widget.initialCurrentLocation!);
+    _destination = widget.initialDestination == null
+        ? null
+        : _matchLocation(widget.initialDestination!);
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -589,7 +593,7 @@ class _NavigationScreenState extends State<NavigationScreen> {
     required ValueChanged<String?> onChanged,
   }) {
     return DropdownButtonFormField<String>(
-      initialValue: _locations.contains(value) ? value : null,
+      value: _locations.contains(value) ? value : null,
       isExpanded: true,
       decoration: InputDecoration(
         labelText: label,
@@ -645,9 +649,11 @@ class _StatusPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final statusColor = availability.occupied ? Colors.orange : Colors.green;
-    final title = availability.occupied
-        ? '$destination is occupied'
-        : '$destination is free now';
+    final title = destination.isEmpty
+        ? 'Select a destination'
+        : availability.occupied
+            ? '$destination is occupied'
+            : '$destination is free now';
     final faculty = availability.currentClass?.faculty;
     final facultyText =
         faculty == null || faculty.isEmpty ? '' : ' with $faculty';
@@ -655,10 +661,12 @@ class _StatusPanel extends StatelessWidget {
         ? '.'
         : '. Wait until ${availability.nextFreeAt}.';
 
-    final detail = availability.occupied
-        ? '${availability.currentClass?.subject ?? 'Class'} is running'
-            '$facultyText$waitText'
-        : 'Route is ready from your current location.';
+    final detail = destination.isEmpty
+        ? 'Choose your current location and destination to start navigation.'
+        : availability.occupied
+            ? '${availability.currentClass?.subject ?? 'Class'} is running'
+                '$facultyText$waitText'
+            : 'Route is ready from your current location.';
     final etaText = remainingSeconds >= 60
         ? '${(remainingSeconds / 60).ceil()} min'
         : '$remainingSeconds sec';

@@ -50,6 +50,20 @@ class RoomStatusScreen extends StatelessWidget {
               return ListView(
                 padding: const EdgeInsets.all(12),
                 children: [
+                  if (PermissionService(user).canAllocateRooms)
+                    Card(
+                      child: ListTile(
+                        leading: const Icon(Icons.event_available),
+                        title: const Text('Allocate Free Room'),
+                        subtitle: const Text('Select a free room and time'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => _showAllocationSheet(
+                          context: context,
+                          user: user,
+                          freeRooms: free,
+                        ),
+                      ),
+                    ),
                   _RoomGroup(
                     title: 'All Rooms',
                     rooms: TimetableService.knownRooms,
@@ -62,6 +76,161 @@ class RoomStatusScreen extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+
+  void _showAllocationSheet({
+    required BuildContext context,
+    required AppUser user,
+    required List<String> freeRooms,
+  }) {
+    final authService = AuthService();
+    String? selectedRoom;
+    TimeOfDay? startTime;
+    TimeOfDay? endTime;
+
+    String formatTime(TimeOfDay time) {
+      return '${time.hour.toString().padLeft(2, '0')}:'
+          '${time.minute.toString().padLeft(2, '0')}';
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return SafeArea(
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: 16,
+                  right: 16,
+                  top: 16,
+                  bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Allocate Free Room',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      value: selectedRoom,
+                      decoration: const InputDecoration(
+                        labelText: 'Free Room',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: freeRooms.map((room) {
+                        return DropdownMenuItem(
+                          value: room,
+                          child: Text(room),
+                        );
+                      }).toList(),
+                      onChanged: (value) {
+                        setSheetState(() => selectedRoom = value);
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              final value = await showTimePicker(
+                                context: context,
+                                initialTime: startTime ?? TimeOfDay.now(),
+                              );
+                              if (value != null) {
+                                setSheetState(() => startTime = value);
+                              }
+                            },
+                            icon: const Icon(Icons.access_time),
+                            label: Text(
+                              startTime == null
+                                  ? 'Start'
+                                  : TimetableService.formatTime12Hour(
+                                      formatTime(startTime!),
+                                    ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              final value = await showTimePicker(
+                                context: context,
+                                initialTime: endTime ?? TimeOfDay.now(),
+                              );
+                              if (value != null) {
+                                setSheetState(() => endTime = value);
+                              }
+                            },
+                            icon: const Icon(Icons.timer_off),
+                            label: Text(
+                              endTime == null
+                                  ? 'End'
+                                  : TimetableService.formatTime12Hour(
+                                      formatTime(endTime!),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: selectedRoom == null ||
+                                startTime == null ||
+                                endTime == null
+                            ? null
+                            : () async {
+                                final now = DateTime.now();
+                                final allocationId =
+                                    '${user.uid}_${selectedRoom}_${now.millisecondsSinceEpoch}';
+                                await authService.dbRef
+                                    .child('room_allocations/$allocationId')
+                                    .set({
+                                  'id': allocationId,
+                                  'room': selectedRoom,
+                                  'facultyUid': user.uid,
+                                  'facultyName': user.name,
+                                  'day': TimetableService.todayName(),
+                                  'date': DateTime(
+                                    now.year,
+                                    now.month,
+                                    now.day,
+                                  ).toIso8601String(),
+                                  'startTime': formatTime(startTime!),
+                                  'endTime': formatTime(endTime!),
+                                  'createdAt': now.toIso8601String(),
+                                  'active': true,
+                                });
+                                await authService.dbRef
+                                    .child('rooms/$selectedRoom')
+                                    .update({
+                                  'room': selectedRoom,
+                                  'occupied': true,
+                                  'allocatedBy': user.uid,
+                                  'allocationId': allocationId,
+                                });
+                                if (context.mounted) Navigator.pop(context);
+                              },
+                        icon: const Icon(Icons.event_available),
+                        label: const Text('Allocate'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -192,7 +361,7 @@ class _RoomAllocationScreenState extends State<RoomAllocationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Temporary Room Allocation')),
+      appBar: AppBar(title: const Text('Allocate Free Room')),
       body: StreamBuilder<List<TimetableEntry>>(
         stream: _timetableService.watchEntries(),
         builder: (context, snapshot) {
@@ -214,7 +383,7 @@ class _RoomAllocationScreenState extends State<RoomAllocationScreen> {
                 padding: const EdgeInsets.all(16),
                 children: [
                   DropdownButtonFormField<String>(
-                    initialValue: freeRooms.contains(selectedRoom) ? selectedRoom : null,
+                    value: freeRooms.contains(selectedRoom) ? selectedRoom : null,
                     decoration: const InputDecoration(
                       labelText: 'Free Room',
                       border: OutlineInputBorder(),
@@ -279,7 +448,8 @@ class _RoomAllocationScreenState extends State<RoomAllocationScreen> {
                           title: Text(allocation['room']?.toString() ?? ''),
                           subtitle: Text(
                             '${allocation['facultyName']} | '
-                            '${allocation['startTime']} - ${allocation['endTime']}',
+                            '${TimetableService.formatTime12Hour(allocation['startTime']?.toString() ?? '')}'
+                            ' - ${TimetableService.formatTime12Hour(allocation['endTime']?.toString() ?? '')}',
                           ),
                         ),
                       );

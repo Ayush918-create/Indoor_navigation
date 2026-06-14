@@ -174,6 +174,18 @@ class TimetableService {
     return hour * 60 + minute;
   }
 
+  static String formatTime12Hour(String time) {
+    final minutes = parseTimeToMinutes(time);
+    if (minutes < 0) return time;
+
+    final hour24 = minutes ~/ 60;
+    final minute = minutes % 60;
+    final period = hour24 >= 12 ? 'PM' : 'AM';
+    final hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12;
+
+    return '$hour12:${minute.toString().padLeft(2, '0')} $period';
+  }
+
   static bool isEntryRunningNow(
     TimetableEntry entry, {
     DateTime? now,

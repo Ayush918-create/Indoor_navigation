@@ -141,7 +141,7 @@ class _FacultyScreenState extends State<FacultyScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Faculty Timetable'),
+        title: const Text('Faculty'),
       ),
       body: Column(
         children: [
@@ -178,7 +178,7 @@ class _FacultyScreenState extends State<FacultyScreen> {
 
                     if (schedules.isEmpty) {
                       return const Center(
-                        child: Text('No Faculty Timetable Found'),
+                        child: Text('No Faculty Found'),
                       );
                     }
 
@@ -310,7 +310,9 @@ class FacultyScheduleTile extends StatelessWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '${entry.startTime} - ${entry.endTime}  |  ${entry.room}',
+                            '${TimetableService.formatTime12Hour(entry.startTime)}'
+                            ' - ${TimetableService.formatTime12Hour(entry.endTime)}'
+                            '  |  ${entry.room}',
                           ),
                           const SizedBox(height: 8),
                           Align(
